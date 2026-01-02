@@ -149,3 +149,17 @@ class ExplainTransactionRequest(BaseModel):
     features: Dict[str, Any]
     model_version: str
     schema_spec: SchemaSpec
+
+
+# --- Chat Response Models ---
+
+class ChatResponse(BaseModel):
+    """Structured chat response with optional suggestion for global JSON function generation."""
+    general_answer: str = Field(
+        ..., 
+        description="The main response to the user's question about their ML model"
+    )
+    global_json_suggestion: Optional[str] = Field(
+        None,
+        description="If the conversation reveals improvements needed for the explain_global() function (e.g., missing features, better trend calculation, additional metadata), provide a brief actionable suggestion here. Only populate if there's a concrete improvement to make."
+    )
