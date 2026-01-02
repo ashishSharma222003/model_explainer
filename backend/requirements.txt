@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+langchain
+langchain-community
+langchain-anthropic
+python-dotenv
+pandas
+scikit-learn
+numpy
+pydantic
