@@ -25,3 +25,18 @@ lerna-debug.log*
 .vscode/
 .idea/
 .DS_Store
+.cursor/
+
+# Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+
+# Backend data files (keep templates, ignore user data)
+backend/chat_memory.json
+backend/user_sessions.json
