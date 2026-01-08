@@ -1,5 +1,11 @@
 version: '3.8'
 
+# Model Explainer - ML Analysis Chat Application
+# Features:
+# - Report Generation (Executive, Technical, Full Export)
+# - Developer Mode with Python kernel for code execution
+# - Chat-based model analysis with context tracking
+
 services:
   frontend:
     build:

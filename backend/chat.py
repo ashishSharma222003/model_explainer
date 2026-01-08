@@ -125,6 +125,91 @@ def explain_global(model, X, feature_names, model_version="v1"):
     }
 '''
 
+EXAMPLE_EXPLAIN_TXN = '''
+from datetime import datetime
+import numpy as np
+import shap
+
+def explain_txn(model, txn_features, feature_names, txn_id, model_version="v1", threshold=0.5):
+    """
+    Generate local explanation for a single transaction.
+    
+    Args:
+        model: Trained model
+        txn_features: Feature values for this transaction (1D array or dict)
+        feature_names: List of feature names
+        txn_id: Unique transaction identifier
+        model_version: Version string
+        threshold: Decision threshold
+    """
+    # Convert to array if dict
+    if isinstance(txn_features, dict):
+        X = np.array([txn_features[f] for f in feature_names]).reshape(1, -1)
+        values_dict = txn_features
+    else:
+        X = np.array(txn_features).reshape(1, -1)
+        values_dict = dict(zip(feature_names, txn_features))
+    
+    # Get prediction
+    if hasattr(model, 'predict_proba'):
+        score = float(model.predict_proba(X)[0, 1])
+    else:
+        score = float(model.predict(X)[0])
+    
+    label = "FRAUD" if score >= threshold else "LEGIT"
+    
+    # Get SHAP values for local contributions
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X)
+    
+    # Handle binary classification
+    if isinstance(shap_values, list):
+        shap_values = shap_values[1]  # Positive class
+    
+    # Build local contributions
+    local_contributions = []
+    sorted_idx = np.argsort(np.abs(shap_values[0]))[::-1]
+    
+    for idx in sorted_idx[:10]:  # Top 10 features
+        contribution = float(shap_values[0][idx])
+        local_contributions.append({
+            "feature": feature_names[idx],
+            "value": values_dict[feature_names[idx]],
+            "contribution": contribution,
+            "direction": "positive" if contribution > 0 else "negative"
+        })
+    
+    # Generate narratives
+    top_positive = [c for c in local_contributions if c["direction"] == "positive"][:3]
+    top_negative = [c for c in local_contributions if c["direction"] == "negative"][:3]
+    
+    narrative_plain = []
+    if top_positive:
+        factors = ", ".join([f"{c['feature']}={c['value']}" for c in top_positive])
+        narrative_plain.append(f"Key factors increasing {label} likelihood: {factors}")
+    if top_negative:
+        factors = ", ".join([f"{c['feature']}={c['value']}" for c in top_negative])
+        narrative_plain.append(f"Factors decreasing {label} likelihood: {factors}")
+    
+    return {
+        "txn_id": txn_id,
+        "model_version": model_version,
+        "generated_at": datetime.now().isoformat(),
+        "prediction": {
+            "score": score,
+            "threshold": threshold,
+            "label": label,
+            "calibrated": False
+        },
+        "local_contributions": local_contributions,
+        "narrative_plain": narrative_plain,
+        "narrative_compliance": [
+            f"Transaction {txn_id} scored {score:.3f} against threshold {threshold}",
+            f"Primary contributing factors: {', '.join([c['feature'] for c in local_contributions[:5]])}"
+        ]
+    }
+'''
+
 
 class ChatManager:
     def __init__(self):
@@ -254,69 +339,123 @@ Only provide suggestions when there's a concrete, actionable improvement. Keep s
 
         return response
 
-    async def guide_code_to_json(self, session_id: str, user_code: str) -> str:
+    async def guide_code_to_global_json(self, session_id: str, user_code: str) -> str:
         """
-        Analyze user code and generate explain_global or explain_txn function.
+        Analyze user code and generate explain_global function.
+        Focused prompt - only includes global JSON schema and example.
         """
         history = self.get_session_history(session_id)
         
         system_content = f"""You are an expert ML Engineer who helps users create explainability functions for their models.
 
 YOUR TASK:
-Analyze the user's ML code and generate a complete, runnable Python function that creates explanation JSON.
+Analyze the user's ML code and generate a complete, runnable Python function called `explain_global()` that creates a global explanation JSON.
 
 OUTPUT FORMAT:
 Always output a complete Python function that:
-1. Takes appropriate inputs (model, data, features, etc.)
-2. Extracts/computes the required explanation data
+1. Takes model, training data, and feature names as inputs
+2. Computes global feature importances and trends
 3. Returns a dictionary matching the expected JSON schema
 4. Includes helpful comments
 
-GLOBAL JSON SCHEMA (for explain_global):
+GLOBAL JSON SCHEMA:
 {GLOBAL_JSON_SCHEMA}
 
-TRANSACTION JSON SCHEMA (for explain_txn):
-{TXN_JSON_SCHEMA}
-
 IMPLEMENTATION GUIDANCE:
-
-For explain_global():
-- Use model.feature_importances_ for tree-based models
-- Use permutation_importance() for any model
-- Use SHAP for more detailed explanations
-- Compute trends by binning features and averaging predictions
+- Use model.feature_importances_ for tree-based models (RandomForest, XGBoost, LightGBM)
+- Use permutation_importance() for any model type
+- Use SHAP summary plots for more detailed direction information
+- Compute trends by binning numeric features and averaging predictions
 - Include datetime.now().isoformat() for generated_at
+- Calculate reliability metrics based on sample size
 
-For explain_txn():
-- Use SHAP values for local contributions
-- Or use model-specific methods (e.g., treeExplainer)
-- Include the actual feature values
-- Generate plain English narrative
-
-EXAMPLE explain_global() for sklearn RandomForest:
+EXAMPLE explain_global() for sklearn:
 ```python
 {EXAMPLE_EXPLAIN_GLOBAL}
 ```
 
 Now analyze the user's code and provide a tailored implementation."""
 
-        # Build messages manually
         messages = [SystemMessage(content=system_content)]
-        
-        # Add recent history
         for msg in history.messages[-4:]:
             messages.append(msg)
-        
-        # Add user's code
         messages.append(HumanMessage(content=user_code))
         
-        # Invoke LLM directly
         response_msg = self.llm.invoke(messages)
         
-        history.add_user_message(f"Code analysis request: {user_code[:100]}...")
+        history.add_user_message(f"Global JSON request: {user_code[:100]}...")
         history.add_ai_message(response_msg.content)
         self.save_history()
         
         return response_msg.content
+
+    async def guide_code_to_txn_json(self, session_id: str, user_code: str, global_json_context: str = None) -> str:
+        """
+        Analyze user code and generate explain_txn function.
+        Focused prompt - only includes transaction JSON schema and example.
+        """
+        history = self.get_session_history(session_id)
+        
+        # Build context section if global JSON is provided
+        global_context = ""
+        if global_json_context:
+            global_context = f"""
+GLOBAL JSON CONTEXT (for consistency):
+{global_json_context}
+
+IMPORTANT: Use the same feature names and model_version as the global explanation above.
+"""
+        
+        system_content = f"""You are an expert ML Engineer who helps users create explainability functions for their models.
+
+YOUR TASK:
+Analyze the user's ML code and generate a complete, runnable Python function called `explain_txn()` that creates a local/transaction-level explanation JSON.
+{global_context}
+OUTPUT FORMAT:
+Always output a complete Python function that:
+1. Takes model, single transaction features, and transaction ID as inputs
+2. Computes local feature contributions (SHAP values or similar)
+3. Generates human-readable narratives
+4. Returns a dictionary matching the expected JSON schema
+5. Includes helpful comments
+
+TRANSACTION JSON SCHEMA:
+{TXN_JSON_SCHEMA}
+
+IMPLEMENTATION GUIDANCE:
+- Use SHAP TreeExplainer for tree-based models (fast)
+- Use SHAP KernelExplainer for any model (slower but universal)
+- Use LIME as an alternative to SHAP
+- Include actual feature values in local_contributions
+- Generate both plain English and compliance-focused narratives
+- Sort contributions by absolute magnitude
+- Include top 10-15 most important features
+
+EXAMPLE explain_txn() for sklearn:
+```python
+{EXAMPLE_EXPLAIN_TXN}
+```
+
+Now analyze the user's code and provide a tailored implementation."""
+
+        messages = [SystemMessage(content=system_content)]
+        for msg in history.messages[-4:]:
+            messages.append(msg)
+        messages.append(HumanMessage(content=user_code))
+        
+        response_msg = self.llm.invoke(messages)
+        
+        history.add_user_message(f"Txn JSON request: {user_code[:100]}...")
+        history.add_ai_message(response_msg.content)
+        self.save_history()
+        
+        return response_msg.content
+
+    # Keep the old method for backward compatibility (routes to global by default)
+    async def guide_code_to_json(self, session_id: str, user_code: str) -> str:
+        """
+        Legacy method - routes to global JSON generation.
+        """
+        return await self.guide_code_to_global_json(session_id, user_code)
 
 chat_manager = ChatManager()

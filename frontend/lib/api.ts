@@ -45,6 +45,16 @@ export async function guideCode(session_id: string, code: string) {
   return res.json();
 }
 
+export async function guideTxnCode(session_id: string, code: string, global_json_context?: string) {
+  const res = await fetch(`${API_URL}/guide-txn-code`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id, code, global_json_context }),
+  });
+  if (!res.ok) throw new Error('Failed to get transaction code guidance');
+  return res.json();
+}
+
 // ============ Session API ============
 
 export interface SessionSummary {
@@ -164,4 +174,158 @@ export async function deleteSessionFromBackend(sessionId: string): Promise<boole
     console.warn('Failed to delete session from backend:', e);
     return false;
   }
+}
+
+// ============ Report Generation API ============
+
+export type ReportType = 'executive' | 'technical' | 'full_export';
+export type ReportFormat = 'markdown' | 'json';
+
+export interface ReportRequest {
+  session_id: string;
+  report_type: ReportType;
+  format: ReportFormat;
+  include_code: boolean;
+  include_chat_history: boolean;
+  include_json_data: boolean;
+}
+
+export interface GeneratedReport {
+  format: string;
+  content: string | object;
+  filename: string;
+  title: string;
+}
+
+// Record saved to session history
+export interface ReportRecord {
+  id: string;
+  reportType: string;
+  format: string;
+  title: string;
+  generatedAt: string;
+  includeCode: boolean;
+  includeChatHistory: boolean;
+  includeJsonData: boolean;
+  filename: string;
+  summary?: string;
+  content?: string;  // Full content for viewing later
+}
+
+export interface GenerateReportResponse {
+  success: boolean;
+  report: GeneratedReport;
+  reportRecord?: ReportRecord;
+}
+
+export async function generateReport(request: ReportRequest): Promise<GenerateReportResponse> {
+  const res = await fetch(`${API_URL}/reports/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  if (!res.ok) throw new Error('Failed to generate report');
+  return res.json();
+}
+
+// ============ Kernel (Developer Mode) API ============
+
+export interface KernelOutput {
+  type: 'stream' | 'result' | 'error';
+  data?: string;
+  name?: string;
+  text?: string;
+  ename?: string;
+  evalue?: string;
+  traceback?: string;
+}
+
+export interface CodeExecutionResult {
+  success: boolean;
+  outputs: KernelOutput[];
+  error: string | null;
+  execution_time_ms: number;
+  variables: string[];
+}
+
+export async function executeCode(
+  sessionId: string, 
+  code: string, 
+  timeoutSeconds: number = 30
+): Promise<CodeExecutionResult> {
+  const res = await fetch(`${API_URL}/kernel/execute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ 
+      session_id: sessionId, 
+      code, 
+      timeout_seconds: timeoutSeconds 
+    }),
+  });
+  if (!res.ok) throw new Error('Failed to execute code');
+  return res.json();
+}
+
+export async function resetKernel(sessionId: string): Promise<{ success: boolean; message: string }> {
+  const res = await fetch(`${API_URL}/kernel/reset`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId }),
+  });
+  if (!res.ok) throw new Error('Failed to reset kernel');
+  return res.json();
+}
+
+export async function getKernelInfo(sessionId: string): Promise<{ exists: boolean; info?: any }> {
+  try {
+    const res = await fetch(`${API_URL}/kernel/${sessionId}/info`);
+    if (!res.ok) return { exists: false };
+    return res.json();
+  } catch {
+    return { exists: false };
+  }
+}
+
+export async function injectKernelContext(
+  sessionId: string, 
+  mlCode?: string, 
+  globalJson?: any
+): Promise<{ success: boolean }> {
+  const res = await fetch(`${API_URL}/kernel/inject-context`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ 
+      session_id: sessionId, 
+      ml_code: mlCode, 
+      global_json: globalJson 
+    }),
+  });
+  if (!res.ok) throw new Error('Failed to inject context');
+  return res.json();
+}
+
+export interface FileUploadResult {
+  success: boolean;
+  message: string;
+  preview: string;
+  shape?: [number, number];
+  columns?: string[];
+}
+
+export async function uploadFileToKernel(
+  sessionId: string,
+  file: File,
+  variableName: string = 'uploaded_data'
+): Promise<FileUploadResult> {
+  const formData = new FormData();
+  formData.append('session_id', sessionId);
+  formData.append('file', file);
+  formData.append('variable_name', variableName);
+
+  const res = await fetch(`${API_URL}/kernel/upload-file`, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!res.ok) throw new Error('Failed to upload file');
+  return res.json();
 }

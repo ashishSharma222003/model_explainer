@@ -53,6 +53,21 @@ class CodeSuggestion(BaseModel):
     dismissed: bool = False
 
 
+class GeneratedReport(BaseModel):
+    """Record of a generated report."""
+    id: str
+    reportType: str  # 'executive', 'technical', 'compliance', 'full_export'
+    format: str  # 'markdown', 'html', 'pdf'
+    title: str
+    generatedAt: str
+    includeCode: bool = False
+    includeChatHistory: bool = True
+    includeJsonData: bool = False
+    filename: str
+    summary: Optional[str] = None  # Preview of the report
+    content: Optional[str] = None  # Full content for viewing later
+
+
 class Session(BaseModel):
     id: str
     name: str
@@ -63,6 +78,7 @@ class Session(BaseModel):
     txnJson: Optional[Dict[str, Any]] = None
     chatHistory: ChatHistory = ChatHistory()
     suggestions: List[CodeSuggestion] = []
+    reports: List[GeneratedReport] = []  # History of generated reports
     
     # Metadata for quick display
     step: str = "code"  # Current step: code, global-json, global-chat, txn-json, txn-chat

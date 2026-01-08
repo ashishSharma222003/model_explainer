@@ -1,8 +1,8 @@
 "use client";
 import { useState, useRef, useEffect, useContext } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileJson, Check, AlertCircle, ArrowRight, Eye, Send, Sparkles, Bot, Copy, Code2 } from 'lucide-react';
-import { guideCode } from '../lib/api';
+import { FileJson, Check, AlertCircle, ArrowRight, Eye, Send, Sparkles, Bot, Copy, Code2, MessageSquare } from 'lucide-react';
+import { guideTxnCode } from '../lib/api';
 import { AppContext } from '@/app/page';
 
 type TabType = 'generate' | 'paste';
@@ -19,7 +19,9 @@ export default function TxnJsonInput({ onComplete }: { onComplete: () => void })
   const [loading, setLoading] = useState(false);
   const [sessionId] = useState(`sess_txn_${Math.random().toString(36).substr(2, 9)}`);
   const [copied, setCopied] = useState(false);
+  const [chatInput, setChatInput] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const handleGenerateFunction = async () => {
     if (!context?.mlCode) {
@@ -34,32 +36,51 @@ export default function TxnJsonInput({ onComplete }: { onComplete: () => void })
     }]);
 
     try {
-      const res = await guideCode(sessionId, 
-        `Based on my model code, please generate a Python function called 'explain_txn(txn_features, model)' that creates a Transaction JSON matching this structure:
-
-{
-  "txn_id": "unique_id",
-  "model_version": "string",
-  "generated_at": "ISO datetime",
-  "prediction": {
-    "score": 0.0-1.0,
-    "threshold": 0.5,
-    "label": "FRAUD|LEGIT"
-  },
-  "local_contributions": [
-    { "feature": "name", "value": "original_value", "contribution": 0.15, "direction": "positive|negative" }
-  ],
-  "narrative_plain": ["Plain English explanation"],
-  "narrative_compliance": ["Compliance-focused explanation"]
-}
+      // Simple user message - the backend now has the focused prompt
+      const userMessage = `Please generate an explain_txn() function for my model.
 
 MY CODE:
+${context.mlCode}`;
 
-${context.mlCode}`
-      );
+      // Pass global JSON context separately to the backend
+      const globalContext = context?.globalJson 
+        ? JSON.stringify(context.globalJson, null, 2)
+        : undefined;
+
+      const res = await guideTxnCode(sessionId, userMessage, globalContext);
       setMessages(prev => [...prev, { type: 'ai', content: res.response }]);
     } catch (e) {
       setMessages(prev => [...prev, { type: 'ai', content: "Failed to generate function." }]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleChatSend = async () => {
+    if (!chatInput.trim() || loading) return;
+
+    const userMessage = chatInput;
+    setChatInput('');
+    setMessages(prev => [...prev, { type: 'user', content: userMessage }]);
+    setLoading(true);
+
+    try {
+      // Simple message - backend has the focused txn prompt
+      let contextInfo = `User request about the explain_txn() function:\n\n${userMessage}`;
+      
+      if (context?.mlCode) {
+        contextInfo += `\n\nML CODE:\n${context.mlCode}`;
+      }
+
+      // Pass global JSON context separately
+      const globalContext = context?.globalJson 
+        ? JSON.stringify(context.globalJson, null, 2)
+        : undefined;
+
+      const res = await guideTxnCode(sessionId, contextInfo, globalContext);
+      setMessages(prev => [...prev, { type: 'ai', content: res.response }]);
+    } catch (e) {
+      setMessages(prev => [...prev, { type: 'ai', content: "Failed to process request. Please try again." }]);
     } finally {
       setLoading(false);
     }
@@ -172,9 +193,20 @@ ${context.mlCode}`
                 <Bot className="w-4 h-4 text-amber-400" />
                 <span className="text-sm font-medium text-amber-300">Transaction Function Generator</span>
               </div>
-              {!context?.mlCode && (
-                <span className="text-xs text-red-400">⚠️ No ML code in context</span>
-              )}
+              <div className="flex items-center gap-2">
+                {context?.globalJson && (
+                  <span className="text-xs bg-cyan-500/20 text-cyan-400 px-2 py-0.5 rounded-full">
+                    ✓ Global JSON
+                  </span>
+                )}
+                {context?.mlCode ? (
+                  <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full">
+                    ✓ ML Code
+                  </span>
+                ) : (
+                  <span className="text-xs text-red-400">⚠️ No ML code</span>
+                )}
+              </div>
             </div>
 
             {/* Chat Messages */}
@@ -248,22 +280,68 @@ ${context.mlCode}`
               <div ref={chatEndRef} />
             </div>
 
-            {/* Action Footer */}
+            {/* Chat Input & Actions Footer */}
             {messages.length > 0 && (
-              <div className="p-4 border-t border-slate-800 bg-slate-900/30 flex justify-between items-center">
-                <button
-                  onClick={handleGenerateFunction}
-                  disabled={loading}
-                  className="text-sm text-slate-400 hover:text-white transition-colors"
-                >
-                  Regenerate
-                </button>
-                <button
-                  onClick={() => setActiveTab('paste')}
-                  className="flex items-center gap-2 px-4 py-2 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 rounded-lg text-amber-300 text-sm font-medium transition-all"
-                >
-                  Continue to Paste JSON <ArrowRight className="w-4 h-4" />
-                </button>
+              <div className="border-t border-slate-800 bg-slate-900/30">
+                {/* Chat Input */}
+                <div className="p-3 border-b border-slate-800/50">
+                  <div className="flex gap-2">
+                    <input
+                      ref={inputRef}
+                      type="text"
+                      value={chatInput}
+                      onChange={e => setChatInput(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleChatSend()}
+                      placeholder="Ask to refine the function... (e.g., 'add more SHAP features', 'use different explainer')"
+                      className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-4 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-amber-500/50 transition-colors"
+                      disabled={loading}
+                    />
+                    <button
+                      onClick={handleChatSend}
+                      disabled={loading || !chatInput.trim()}
+                      className="px-4 py-2.5 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 disabled:opacity-50 rounded-lg text-white transition-all"
+                    >
+                      <Send className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <div className="flex gap-2 mt-2">
+                    <button
+                      onClick={() => setChatInput('Add more local contribution features')}
+                      className="text-xs px-2 py-1 bg-slate-800/50 hover:bg-slate-800 border border-slate-700/50 rounded text-slate-400 hover:text-white transition-colors"
+                    >
+                      More features
+                    </button>
+                    <button
+                      onClick={() => setChatInput('Add confidence intervals to the prediction')}
+                      className="text-xs px-2 py-1 bg-slate-800/50 hover:bg-slate-800 border border-slate-700/50 rounded text-slate-400 hover:text-white transition-colors"
+                    >
+                      Add confidence
+                    </button>
+                    <button
+                      onClick={() => setChatInput('Make the narrative more detailed for compliance')}
+                      className="text-xs px-2 py-1 bg-slate-800/50 hover:bg-slate-800 border border-slate-700/50 rounded text-slate-400 hover:text-white transition-colors"
+                    >
+                      Better narrative
+                    </button>
+                  </div>
+                </div>
+                
+                {/* Action Buttons */}
+                <div className="p-3 flex justify-between items-center">
+                  <button
+                    onClick={handleGenerateFunction}
+                    disabled={loading}
+                    className="text-sm text-slate-400 hover:text-white transition-colors"
+                  >
+                    Start Over
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('paste')}
+                    className="flex items-center gap-2 px-4 py-2 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 rounded-lg text-amber-300 text-sm font-medium transition-all"
+                  >
+                    Continue to Paste JSON <ArrowRight className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
             )}
           </motion.div>

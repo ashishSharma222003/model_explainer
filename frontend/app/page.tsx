@@ -1,11 +1,13 @@
 "use client";
 import { useState, createContext, useContext, useEffect, useCallback, useRef } from 'react';
-import { Layers, ChevronRight, Check } from 'lucide-react';
+import { Layers, ChevronRight, Check, FileText, Terminal, User, Code2 } from 'lucide-react';
 import CodeAnalyzer from '@/components/CodeAnalyzer';
 import GlobalJsonInput from '@/components/GlobalJsonInput';
 import ChatPanel from '@/components/ChatPanel';
 import TxnJsonInput from '@/components/TxnJsonInput';
 import SessionPicker from '@/components/SessionPicker';
+import ReportGenerator from '@/components/ReportGenerator';
+import DeveloperPanel from '@/components/DeveloperPanel';
 import { 
   Session, 
   CodeSuggestion,
@@ -81,6 +83,9 @@ export default function Home() {
   const [allSessions, setAllSessions] = useState<Session[]>([]);
   const [isHydrated, setIsHydrated] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [showReportGenerator, setShowReportGenerator] = useState(false);
+  const [developerMode, setDeveloperMode] = useState(false);
+  const [kernelOutputToChat, setKernelOutputToChat] = useState<string | null>(null);
   
   const shouldSave = useRef(false);
   
@@ -309,7 +314,7 @@ export default function Home() {
               </div>
             </div>
             
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3">
               {saveStatus !== 'idle' && (
                 <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
                   saveStatus === 'saving' 
@@ -329,6 +334,41 @@ export default function Home() {
                   )}
                 </div>
               )}
+
+              {/* Mode Toggle */}
+              <div className="flex items-center bg-slate-800/50 rounded-lg border border-slate-700/50 p-0.5">
+                <button
+                  onClick={() => setDeveloperMode(false)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                    !developerMode 
+                      ? 'bg-slate-700 text-white' 
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <User className="w-3.5 h-3.5" />
+                  Standard
+                </button>
+                <button
+                  onClick={() => setDeveloperMode(true)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                    developerMode 
+                      ? 'bg-emerald-600 text-white' 
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Terminal className="w-3.5 h-3.5" />
+                  Developer
+                </button>
+              </div>
+
+              {/* Report Generator Button */}
+              <button
+                onClick={() => setShowReportGenerator(true)}
+                className="flex items-center gap-2 px-3 py-1.5 bg-violet-500/20 hover:bg-violet-500/30 border border-violet-500/40 rounded-lg text-xs font-medium text-violet-300 transition-all"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                Report
+              </button>
               
               <SessionPicker
                 sessions={allSessions}
@@ -339,7 +379,7 @@ export default function Home() {
               />
               
               <div className="px-3 py-1.5 bg-slate-800/50 rounded-full border border-slate-700/50">
-                <span className="text-xs font-mono text-slate-400">v0.3</span>
+                <span className="text-xs font-mono text-slate-400">v0.4</span>
               </div>
             </div>
           </div>
@@ -399,7 +439,12 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Main Content */}
+        {/* Main Content - with side panel space when developer mode is on */}
+        <div className={`transition-all duration-300 ${
+          developerMode && (currentStep === 'global-chat' || currentStep === 'txn-chat')
+            ? 'mr-[420px]' // Make room for the developer panel
+            : ''
+        }`}>
         <div className="max-w-7xl mx-auto px-6 py-8">
           {currentStep === 'code' && (
             <CodeAnalyzer onComplete={() => handleNextStep()} />
@@ -411,15 +456,38 @@ export default function Home() {
             <ChatPanel 
               mode="global"
               onAddTxn={() => setCurrentStep('txn-json')}
+                kernelOutput={kernelOutputToChat}
+                onKernelOutputUsed={() => setKernelOutputToChat(null)}
             />
           )}
           {currentStep === 'txn-json' && (
             <TxnJsonInput onComplete={() => handleNextStep()} />
           )}
           {currentStep === 'txn-chat' && (
-            <ChatPanel mode="txn" />
+              <ChatPanel 
+                mode="txn" 
+                kernelOutput={kernelOutputToChat}
+                onKernelOutputUsed={() => setKernelOutputToChat(null)}
+              />
           )}
+          </div>
         </div>
+
+        {/* Developer Panel - Fixed Side Panel */}
+        {developerMode && (currentStep === 'global-chat' || currentStep === 'txn-chat') && (
+          <DeveloperPanel 
+            isVisible={true}
+            onSendToChat={(output) => {
+              setKernelOutputToChat(output);
+            }}
+          />
+        )}
+
+        {/* Report Generator Modal */}
+        <ReportGenerator 
+          isOpen={showReportGenerator} 
+          onClose={() => setShowReportGenerator(false)} 
+        />
       </main>
     </AppContext.Provider>
   );

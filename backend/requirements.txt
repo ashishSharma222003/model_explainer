@@ -4,6 +4,7 @@ langchain
 langchain-community
 langchain-anthropic
 python-dotenv
+python-multipart
 pandas
 scikit-learn
 numpy

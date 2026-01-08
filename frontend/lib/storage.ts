@@ -29,6 +29,21 @@ export interface ChatMessageWithContext {
   context?: ContextSnapshot;
 }
 
+// Record of a generated report (stored in session history)
+export interface GeneratedReport {
+  id: string;
+  reportType: string;
+  format: string;
+  title: string;
+  generatedAt: string;
+  includeCode: boolean;
+  includeChatHistory: boolean;
+  includeJsonData: boolean;
+  filename: string;
+  summary?: string;  // Preview of the report content
+  content?: string;  // Full content for viewing later
+}
+
 export interface Session {
   id: string;
   name: string;
@@ -43,6 +58,7 @@ export interface Session {
     txnChat: ChatMessageWithContext[];
   };
   suggestions?: CodeSuggestion[];
+  reports?: GeneratedReport[];  // History of generated reports
 }
 
 const SESSIONS_KEY = 'model_explainer_sessions';
@@ -68,6 +84,7 @@ export function createNewSession(name?: string): Session {
       txnChat: [],
     },
     suggestions: [],
+    reports: [],
   };
 }
 

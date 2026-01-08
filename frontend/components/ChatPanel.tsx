@@ -10,10 +10,12 @@ import remarkGfm from 'remark-gfm';
 interface ChatPanelProps {
   mode: 'global' | 'txn';
   onAddTxn?: () => void;
+  kernelOutput?: string | null;
+  onKernelOutputUsed?: () => void;
 }
 
 
-export default function ChatPanel({ mode, onAddTxn }: ChatPanelProps) {
+export default function ChatPanel({ mode, onAddTxn, kernelOutput, onKernelOutputUsed }: ChatPanelProps) {
   const context = useContext(AppContext);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -21,8 +23,16 @@ export default function ChatPanel({ mode, onAddTxn }: ChatPanelProps) {
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
   const [showSuggestionBanner, setShowSuggestionBanner] = useState(false);
   const [currentSuggestion, setCurrentSuggestion] = useState<string | null>(null);
+  const [showKernelOutputBanner, setShowKernelOutputBanner] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  
+  // Handle incoming kernel output
+  useEffect(() => {
+    if (kernelOutput) {
+      setShowKernelOutputBanner(true);
+    }
+  }, [kernelOutput]);
 
   // Use messages from context based on mode
   const messages = mode === 'global' 
@@ -251,6 +261,57 @@ export default function ChatPanel({ mode, onAddTxn }: ChatPanelProps) {
                   </button>
                   <button
                     onClick={() => setShowSuggestionBanner(false)}
+                    className="p-1.5 hover:bg-slate-800/50 rounded-lg text-slate-400 hover:text-white transition-colors"
+                    title="Dismiss"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+
+        {/* Kernel Output Banner */}
+        {showKernelOutputBanner && kernelOutput && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="flex-shrink-0 mx-4 mt-4 p-4 bg-gradient-to-r from-emerald-500/20 to-green-500/20 border border-emerald-500/40 rounded-xl"
+          >
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-emerald-500/20 rounded-lg">
+                <Code2 className="w-5 h-5 text-emerald-400" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h4 className="text-sm font-semibold text-emerald-300 mb-1">
+                  Kernel Output Ready
+                </h4>
+                <div className="bg-slate-950 rounded-lg p-2 mb-3 max-h-24 overflow-y-auto">
+                  <pre className="text-xs text-emerald-200/80 font-mono whitespace-pre-wrap">
+                    {kernelOutput.length > 300 ? kernelOutput.slice(0, 300) + '...' : kernelOutput}
+                  </pre>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setInput(prev => {
+                        const prefix = prev ? prev + '\n\n' : '';
+                        return `${prefix}Here's the output from my Python kernel:\n\`\`\`\n${kernelOutput}\n\`\`\`\n\nCan you help me understand this?`;
+                      });
+                      setShowKernelOutputBanner(false);
+                      onKernelOutputUsed?.();
+                    }}
+                    className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/30 hover:bg-emerald-500/40 border border-emerald-500/50 rounded-lg text-xs font-medium text-emerald-200 transition-all"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    Add to Message
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowKernelOutputBanner(false);
+                      onKernelOutputUsed?.();
+                    }}
                     className="p-1.5 hover:bg-slate-800/50 rounded-lg text-slate-400 hover:text-white transition-colors"
                     title="Dismiss"
                   >
