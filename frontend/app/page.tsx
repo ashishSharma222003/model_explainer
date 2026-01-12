@@ -1,13 +1,15 @@
 "use client";
 import { useState, createContext, useContext, useEffect, useCallback, useRef } from 'react';
-import { Layers, ChevronRight, Check, FileText, Terminal, User, Code2 } from 'lucide-react';
+import { Layers, ChevronRight, Check, FileText, Terminal, User, Code2, BookOpen } from 'lucide-react';
 import CodeAnalyzer from '@/components/CodeAnalyzer';
+import DataSchemaInput from '@/components/DataSchemaInput';
 import GlobalJsonInput from '@/components/GlobalJsonInput';
 import ChatPanel from '@/components/ChatPanel';
 import TxnJsonInput from '@/components/TxnJsonInput';
 import SessionPicker from '@/components/SessionPicker';
 import ReportGenerator from '@/components/ReportGenerator';
 import DeveloperPanel from '@/components/DeveloperPanel';
+import GuidelinesInput from '@/components/GuidelinesInput';
 import { 
   Session, 
   CodeSuggestion,
@@ -20,7 +22,7 @@ import {
   setCurrentSessionId,
   deleteSession as deleteSessionFromStorage,
 } from '@/lib/storage';
-import { saveSessionToBackend, getAllSessionsFromBackend } from '@/lib/api';
+import { saveSessionToBackend, getAllSessionsFromBackend, uploadCsvData, getCsvData } from '@/lib/api';
 
 // Re-export types from storage for convenience
 export type { CodeSuggestion, ChatMessageWithContext, ContextSnapshot } from '@/lib/storage';
@@ -35,6 +37,11 @@ interface AppContextType {
   // Convenience accessors
   mlCode: string;
   setMlCode: (code: string) => void;
+  dataSchema: any;
+  setDataSchema: (schema: any) => void;
+  // CSV data is stored on backend - use these methods
+  uploadCsvToBackend: (data: any[], fileName: string) => Promise<void>;
+  fetchCsvFromBackend: () => Promise<any[]>;
   globalJson: any;
   setGlobalJson: (json: any) => void;
   txnJson: any;
@@ -60,21 +67,23 @@ interface AppContextType {
 
 export const AppContext = createContext<AppContextType | null>(null);
 
-type Step = 'code' | 'global-json' | 'global-chat' | 'txn-json' | 'txn-chat';
+type Step = 'data-schema' | 'code' | 'global-json' | 'global-chat' | 'txn-json' | 'txn-chat';
 
-const STEPS: { id: Step; label: string; description: string }[] = [
-  { id: 'code', label: 'Share Code', description: 'Paste your ML code' },
-  { id: 'global-json', label: 'Global JSON', description: 'Paste generated JSON' },
-  { id: 'global-chat', label: 'Explore Global', description: 'Chat about model behavior' },
-  { id: 'txn-json', label: 'Txn JSON', description: 'Add transaction context' },
-  { id: 'txn-chat', label: 'Explore Txn', description: 'Chat about predictions' },
+const STEPS: { id: Step; label: string }[] = [
+  { id: 'data-schema', label: 'Data' },
+  { id: 'code', label: 'Code' },
+  { id: 'global-json', label: 'Patterns' },
+  { id: 'global-chat', label: 'Explore' },
+  { id: 'txn-json', label: 'Cases' },
+  { id: 'txn-chat', label: 'Review' },
 ];
 
 function getStepFromSession(session: Session): Step {
   if (session.txnJson) return 'txn-chat';
   if (session.globalJson) return 'global-chat';
-  if (session.mlCode && session.chatHistory?.codeAnalyzer?.length > 0) return 'code';
-  return 'code';
+  if (session.mlCode) return 'global-json';
+  if (session.dataSchema) return 'code';
+  return 'data-schema';
 }
 
 export default function Home() {
@@ -84,6 +93,7 @@ export default function Home() {
   const [isHydrated, setIsHydrated] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [showReportGenerator, setShowReportGenerator] = useState(false);
+  const [showGuidelines, setShowGuidelines] = useState(false);
   const [developerMode, setDeveloperMode] = useState(false);
   const [kernelOutputToChat, setKernelOutputToChat] = useState<string | null>(null);
   
@@ -217,15 +227,47 @@ export default function Home() {
 
   // Create a snapshot of current context for chat messages
   const createContextSnapshot = useCallback((): ContextSnapshot => {
+    // Get selected cases info from txnJson (new format)
+    const selectedCasesCount = session.txnJson?.totalCases || session.txnJson?.selectedCases?.length || 0;
+    const activeFilters = session.txnJson?.filters?.map((f: any) => f.label) || [];
+    
     return {
       hasCode: Boolean(session.mlCode && session.mlCode.length > 0),
       codeLength: session.mlCode?.length || 0,
       globalJsonVersion: session.globalJson?.model_version,
       globalJsonFeatureCount: session.globalJson?.global_importance?.length,
-      txnId: session.txnJson?.txn_id,
+      txnId: session.txnJson?.txn_id,  // Legacy support
+      selectedCasesCount,
+      activeFilters,
       timestamp: new Date().toISOString(),
     };
   }, [session.mlCode, session.globalJson, session.txnJson]);
+
+  // CSV data management - stored on backend
+  const uploadCsvToBackend = useCallback(async (data: any[], fileName: string) => {
+    try {
+      const result = await uploadCsvData(session.id, data, fileName);
+      if (result.success) {
+        updateSession({ 
+          csvFileName: fileName, 
+          hasCsvData: true, 
+          csvRowCount: result.rowCount 
+        });
+      }
+    } catch (e) {
+      console.error('Failed to upload CSV to backend:', e);
+    }
+  }, [session.id, updateSession]);
+
+  const fetchCsvFromBackend = useCallback(async (): Promise<any[]> => {
+    try {
+      const result = await getCsvData(session.id);
+      return result.data || [];
+    } catch (e) {
+      console.error('Failed to fetch CSV from backend:', e);
+      return [];
+    }
+  }, [session.id]);
 
   // Context value
   const contextValue: AppContextType = {
@@ -233,6 +275,10 @@ export default function Home() {
     updateSession,
     mlCode: session.mlCode,
     setMlCode: (code) => updateSession({ mlCode: code }),
+    dataSchema: session.dataSchema,
+    setDataSchema: (schema) => updateSession({ dataSchema: schema }),
+    uploadCsvToBackend,
+    fetchCsvFromBackend,
     globalJson: session.globalJson,
     setGlobalJson: (json) => updateSession({ globalJson: json }),
     txnJson: session.txnJson,
@@ -263,8 +309,9 @@ export default function Home() {
   const canNavigateTo = (step: Step) => {
     const stepIndex = STEPS.findIndex(s => s.id === step);
     if (stepIndex < currentStepIndex) return true;
-    if (step === 'code') return true;
-    if (step === 'global-json') return session.mlCode.length > 0;
+    if (step === 'data-schema') return true;  // First step, always accessible
+    if (step === 'code') return session.dataSchema !== null;  // Requires data first
+    if (step === 'global-json') return session.dataSchema !== null && session.mlCode.length > 0;
     if (step === 'global-chat') return session.globalJson !== null;
     if (step === 'txn-json') return session.globalJson !== null;
     if (step === 'txn-chat') return session.txnJson !== null;
@@ -361,6 +408,20 @@ export default function Home() {
                 </button>
               </div>
 
+              {/* Guidelines Button */}
+              <button
+                onClick={() => setShowGuidelines(true)}
+                className="flex items-center gap-2 px-3 py-1.5 bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/40 rounded-lg text-xs font-medium text-blue-300 transition-all"
+              >
+                <BookOpen className="w-3.5 h-3.5" />
+                Guidelines
+                {(session.guidelines?.length || 0) > 0 && (
+                  <span className="px-1.5 py-0.5 bg-blue-500/30 rounded text-[10px]">
+                    {session.guidelines?.length}
+                  </span>
+                )}
+              </button>
+
               {/* Report Generator Button */}
               <button
                 onClick={() => setShowReportGenerator(true)}
@@ -387,8 +448,8 @@ export default function Home() {
 
         {/* Step Navigator */}
         <div className="border-b border-slate-800/40 bg-[#0d1117]/50 backdrop-blur-sm">
-          <div className="max-w-7xl mx-auto px-6 py-4">
-            <div className="flex items-center gap-2 overflow-x-auto pb-2">
+          <div className="max-w-7xl mx-auto px-6 py-3">
+            <div className="flex items-center justify-center gap-1">
               {STEPS.map((step, idx) => {
                 const isActive = step.id === currentStep;
                 const isCompleted = idx < currentStepIndex;
@@ -396,43 +457,39 @@ export default function Home() {
                 const hasSuggestions = suggestions.filter(s => !s.dismissed && s.fromStep === step.id).length > 0;
 
                 return (
-                  <button
-                    key={step.id}
-                    onClick={() => isClickable && setCurrentStep(step.id)}
-                    disabled={!isClickable}
-                    className={`relative flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all whitespace-nowrap ${
-                      isActive
-                        ? 'bg-gradient-to-r from-cyan-500/20 to-blue-600/20 border border-cyan-500/40 shadow-lg shadow-cyan-500/10'
-                        : isCompleted
-                        ? 'bg-emerald-500/10 border border-emerald-500/30 hover:bg-emerald-500/20'
-                        : isClickable
-                        ? 'bg-slate-800/30 border border-slate-700/40 hover:bg-slate-800/50'
-                        : 'bg-slate-900/30 border border-slate-800/30 opacity-40 cursor-not-allowed'
-                    }`}
-                  >
-                    {/* Suggestion indicator */}
-                    {hasSuggestions && step.id === 'code' && (
-                      <div className="absolute -top-1 -right-1 w-3 h-3 bg-amber-500 rounded-full animate-pulse" />
-                    )}
-                    <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
-                      isActive
-                        ? 'bg-cyan-500 text-white'
-                        : isCompleted
-                        ? 'bg-emerald-500 text-white'
-                        : 'bg-slate-700 text-slate-400'
-                    }`}>
-                      {isCompleted ? <Check className="w-3.5 h-3.5" /> : idx + 1}
-                    </div>
-                    <div className="text-left">
-                      <div className={`text-sm font-medium ${isActive ? 'text-cyan-300' : isCompleted ? 'text-emerald-300' : 'text-slate-300'}`}>
-                        {step.label}
+                  <div key={step.id} className="flex items-center">
+                    <button
+                      onClick={() => isClickable && setCurrentStep(step.id)}
+                      disabled={!isClickable}
+                      className={`relative flex items-center gap-2 px-3 py-2 rounded-lg transition-all text-sm font-medium ${
+                        isActive
+                          ? 'bg-cyan-500/20 border border-cyan-500/50 text-cyan-300'
+                          : isCompleted
+                          ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20'
+                          : isClickable
+                          ? 'bg-slate-800/40 border border-slate-700/40 text-slate-300 hover:bg-slate-800/60'
+                          : 'bg-slate-900/30 border border-slate-800/30 text-slate-500 opacity-50 cursor-not-allowed'
+                      }`}
+                    >
+                      {/* Suggestion indicator */}
+                      {hasSuggestions && step.id === 'code' && (
+                        <div className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-500 rounded-full animate-pulse" />
+                      )}
+                      <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${
+                        isActive
+                          ? 'bg-cyan-500 text-white'
+                          : isCompleted
+                          ? 'bg-emerald-500 text-white'
+                          : 'bg-slate-700 text-slate-400'
+                      }`}>
+                        {isCompleted ? <Check className="w-3 h-3" /> : idx + 1}
                       </div>
-                      <div className="text-xs text-slate-500">{step.description}</div>
-                    </div>
+                      {step.label}
+                    </button>
                     {idx < STEPS.length - 1 && (
-                      <ChevronRight className="w-4 h-4 text-slate-600 ml-2" />
+                      <ChevronRight className="w-4 h-4 text-slate-600 mx-0.5" />
                     )}
-                  </button>
+                  </div>
                 );
               })}
             </div>
@@ -445,31 +502,34 @@ export default function Home() {
             ? 'mr-[420px]' // Make room for the developer panel
             : ''
         }`}>
-        <div className="max-w-7xl mx-auto px-6 py-8">
-          {currentStep === 'code' && (
-            <CodeAnalyzer onComplete={() => handleNextStep()} />
-          )}
-          {currentStep === 'global-json' && (
-            <GlobalJsonInput onComplete={() => handleNextStep()} />
-          )}
-          {currentStep === 'global-chat' && (
-            <ChatPanel 
-              mode="global"
-              onAddTxn={() => setCurrentStep('txn-json')}
+          <div className="max-w-7xl mx-auto px-6 py-8">
+            {currentStep === 'code' && (
+              <CodeAnalyzer onComplete={() => handleNextStep()} />
+            )}
+            {currentStep === 'data-schema' && (
+              <DataSchemaInput onComplete={() => handleNextStep()} />
+            )}
+            {currentStep === 'global-json' && (
+              <GlobalJsonInput onComplete={() => handleNextStep()} />
+            )}
+            {currentStep === 'global-chat' && (
+              <ChatPanel 
+                mode="global"
+                onAddTxn={() => setCurrentStep('txn-json')}
                 kernelOutput={kernelOutputToChat}
                 onKernelOutputUsed={() => setKernelOutputToChat(null)}
-            />
-          )}
-          {currentStep === 'txn-json' && (
-            <TxnJsonInput onComplete={() => handleNextStep()} />
-          )}
-          {currentStep === 'txn-chat' && (
+              />
+            )}
+            {currentStep === 'txn-json' && (
+              <TxnJsonInput onComplete={() => handleNextStep()} />
+            )}
+            {currentStep === 'txn-chat' && (
               <ChatPanel 
                 mode="txn" 
                 kernelOutput={kernelOutputToChat}
                 onKernelOutputUsed={() => setKernelOutputToChat(null)}
               />
-          )}
+            )}
           </div>
         </div>
 
@@ -487,6 +547,12 @@ export default function Home() {
         <ReportGenerator 
           isOpen={showReportGenerator} 
           onClose={() => setShowReportGenerator(false)} 
+        />
+
+        {/* Guidelines Modal */}
+        <GuidelinesInput 
+          isOpen={showGuidelines} 
+          onClose={() => setShowGuidelines(false)} 
         />
       </main>
     </AppContext.Provider>

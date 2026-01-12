@@ -163,3 +163,35 @@ class ChatResponse(BaseModel):
         None,
         description="If the conversation reveals improvements needed for the explain_global() function (e.g., missing features, better trend calculation, additional metadata), provide a brief actionable suggestion here. Only populate if there's a concrete improvement to make."
     )
+
+
+class TxnChatResponse(BaseModel):
+    """Structured chat response for transaction-level discussions in banking fraud analysis."""
+    general_answer: str = Field(
+        ..., 
+        description="The main response explaining the transaction prediction and analyst behavior"
+    )
+    txn_json_suggestion: Optional[str] = Field(
+        None,
+        description="If the conversation reveals improvements needed for the explain_txn() function (e.g., better narratives, additional local contributions, counterfactual suggestions), provide a brief actionable suggestion here."
+    )
+    what_if_insight: Optional[str] = Field(
+        None,
+        description="If applicable, provide a 'what-if' insight: what changes to the transaction would alter the prediction significantly."
+    )
+    risk_flag: Optional[str] = Field(
+        None,
+        description="Flag any concerns about this specific prediction (e.g., edge case, low confidence, unusual feature values)."
+    )
+    shadow_rule_detected: Optional[str] = Field(
+        None,
+        description="If a pattern is detected where analyst behavior differs from official guidelines or model predictions, describe the potential shadow rule here. E.g., 'Analyst tends to override model for transactions under $500' or 'Late-night transactions are frequently escalated regardless of score'."
+    )
+    guideline_reference: Optional[str] = Field(
+        None,
+        description="Reference to specific bank guidelines that apply to this transaction. Include guideline title and how it applies."
+    )
+    compliance_note: Optional[str] = Field(
+        None,
+        description="Any regulatory or compliance considerations that should be noted for this transaction."
+    )

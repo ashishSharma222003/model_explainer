@@ -1,29 +1,141 @@
 "use client";
 import { useState, useRef, useEffect, useContext } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Code2, Send, Sparkles, Copy, Check, ArrowRight, Bot, RotateCcw, History, ChevronDown, ChevronUp, FileCode, Lightbulb, X, MessageSquare, Wand2 } from 'lucide-react';
+import { Code2, Send, Sparkles, Copy, Check, ArrowRight, Bot, RotateCcw, Wand2, Users, TrendingUp, AlertTriangle, Target, Layers, GitBranch, BarChart3, Brain } from 'lucide-react';
 import { guideCode } from '../lib/api';
 import { AppContext, ChatMessage } from '@/app/page';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { ReactNode } from 'react';
-import { getAllSessions, Session } from '@/lib/storage';
+
+// Model types for understanding analyst decision-making
+const MODEL_TYPES = [
+  {
+    id: 'decision_tree',
+    label: 'Decision Tree',
+    description: 'Extract interpretable IF-THEN rules from analyst decisions',
+    icon: GitBranch,
+    color: 'text-blue-400',
+    bg: 'bg-blue-500/20',
+    prompt: `Generate Python code to build a Decision Tree model that explains L1 analyst decisions.
+
+The code should:
+1. Train a DecisionTreeClassifier to predict l1_decision based on transaction features
+2. Extract human-readable rules using sklearn's export_text()
+3. Visualize the decision tree using plot_tree()
+4. Calculate feature importance to show which factors drive decisions
+5. Output rules in business language: "IF transaction_amount > 5000 AND geo_mismatch = 1 THEN decision = Fraud"
+6. Compare tree predictions to true_fraud_flag to assess analyst accuracy
+
+Output a function called analyze_l1_decisions() that returns a dictionary with:
+- decision_rules: list of extracted rules
+- feature_importance: dict of feature -> importance score
+- accuracy_metrics: precision, recall, f1 vs true_fraud_flag`
+  },
+  {
+    id: 'logistic_regression',
+    label: 'Logistic Regression',
+    description: 'Quantify how each feature influences analyst decisions',
+    icon: TrendingUp,
+    color: 'text-emerald-400',
+    bg: 'bg-emerald-500/20',
+    prompt: `Generate Python code to build a Logistic Regression model that quantifies feature effects on analyst decisions.
+
+The code should:
+1. Train LogisticRegression to predict l1_decision and l2_decision
+2. Calculate odds ratios (exp of coefficients) for each feature
+3. Interpret coefficients: "1 unit increase in velocity_score = 1.5x more likely to flag as fraud"
+4. Identify which features have strongest positive/negative effects on fraud decisions
+5. Compare L1 vs L2 coefficient patterns to find differences
+6. Include 95% confidence intervals for coefficients
+
+Output a function called analyze_decision_factors() that returns:
+- l1_odds_ratios: dict of feature -> odds ratio with confidence interval
+- l2_odds_ratios: dict of feature -> odds ratio with confidence interval
+- interpretation: human-readable summary of key findings`
+  },
+  {
+    id: 'bias_tests',
+    label: 'Bias Detection',
+    description: 'Statistical tests to find hidden biases in decisions',
+    icon: AlertTriangle,
+    color: 'text-amber-400',
+    bg: 'bg-amber-500/20',
+    prompt: `Generate Python code to perform statistical tests that detect biases in analyst decisions.
+
+The code should:
+1. Chi-square tests for categorical variables (geography, customer_segment, channel, l1_region)
+2. T-tests for numeric thresholds (do analysts treat amounts differently?)
+3. Calculate effect sizes (Cramer's V for categorical, Cohen's d for numeric)
+4. Test if analysts override model predictions differently by customer type
+5. Compare decision rates across analyst regions and risk appetites
+6. Output a summary table with p-values and effect sizes
+
+Output a function called detect_analyst_biases() that returns:
+- categorical_biases: list of {variable, chi2, p_value, cramers_v, interpretation}
+- numeric_biases: list of {variable, t_stat, p_value, cohens_d, interpretation}
+- shadow_rules: list of detected undocumented patterns`
+  },
+  {
+    id: 'accuracy_metrics',
+    label: 'Accuracy Analysis',
+    description: 'Compare analyst decisions to actual fraud outcomes',
+    icon: Target,
+    color: 'text-violet-400',
+    bg: 'bg-violet-500/20',
+    prompt: `Generate Python code to calculate comprehensive accuracy metrics for analyst decisions.
+
+The code should:
+1. Build confusion matrices for L1 and L2 decisions vs true_fraud_flag
+2. Calculate accuracy, precision, recall, F1-score for each level
+3. Compare analyst accuracy to model_risk_score predictions
+4. Break down accuracy by analyst (l1_analyst_id, l2_analyst_id) to find best/worst performers
+5. Analyze false positive/negative rates by transaction type and amount
+6. Calculate potential cost savings from improving accuracy
+
+Output a function called analyze_decision_accuracy() that returns:
+- l1_metrics: {accuracy, precision, recall, f1, confusion_matrix}
+- l2_metrics: {accuracy, precision, recall, f1, confusion_matrix}
+- analyst_rankings: list of {analyst_id, accuracy, case_count} sorted by accuracy
+- improvement_opportunities: list of cases where analysts could have done better`
+  },
+  {
+    id: 'complete_model',
+    label: 'Complete Analysis',
+    description: 'Full mathematical model combining all techniques',
+    icon: Brain,
+    color: 'text-cyan-400',
+    bg: 'bg-cyan-500/20',
+    prompt: `Generate a comprehensive Python function that builds a complete mathematical model of analyst decision-making.
+
+The function called build_analyst_decision_model() should:
+1. Preprocess data: encode categoricals, handle missing values, scale numerics
+2. Train Decision Tree and extract interpretable rules
+3. Train Logistic Regression and calculate odds ratios
+4. Perform chi-square and t-tests for bias detection
+5. Calculate accuracy metrics comparing to true_fraud_flag
+6. Cluster analysts by decision patterns using KMeans
+7. Identify shadow rules (undocumented decision patterns)
+8. Return a structured JSON compatible with the Global JSON schema
+
+The output JSON should include:
+- decision_rules: extracted IF-THEN rules
+- feature_effects: odds ratios and importance scores
+- detected_biases: statistical test results
+- accuracy_metrics: L1 and L2 performance
+- analyst_clusters: groups of similar decision-makers
+- shadow_rules: undocumented patterns found
+- recommendations: suggested improvements`
+  }
+];
 
 export default function CodeAnalyzer({ onComplete }: { onComplete: () => void }) {
   const context = useContext(AppContext);
-  const [userCode, setUserCode] = useState('');
   const [loading, setLoading] = useState(false);
-  const [sessionId] = useState(`sess_code_${context?.session.id || Math.random().toString(36).substr(2, 9)}`);
+  const [sessionId] = useState(`sess_codegen_${context?.session.id || Math.random().toString(36).substr(2, 9)}`);
   const [copied, setCopied] = useState(false);
-  const [copiedSuggestionId, setCopiedSuggestionId] = useState<string | null>(null);
-  const [initialized, setInitialized] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
-  const [previousSessions, setPreviousSessions] = useState<Session[]>([]);
+  const [customPrompt, setCustomPrompt] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
-
-  // Get suggestions from context
-  const suggestions = context?.suggestions?.filter(s => !s.dismissed) || [];
-  const hasActiveSuggestions = suggestions.length > 0;
+  const inputRef = useRef<HTMLInputElement>(null);
 
   // Use messages from context
   const messages = context?.codeAnalyzerMessages || [];
@@ -31,92 +143,119 @@ export default function CodeAnalyzer({ onComplete }: { onComplete: () => void })
     context?.setCodeAnalyzerMessages(newMessages);
   };
 
-  // Load previous sessions with code
-  useEffect(() => {
-    const sessions = getAllSessions();
-    const sessionsWithCode = sessions.filter(s => 
-      s.mlCode && s.mlCode.length > 0 && s.id !== context?.session.id
-    );
-    setPreviousSessions(sessionsWithCode);
-  }, [context?.session.id]);
+  // Get data schema info for context
+  const dataSchema = context?.dataSchema;
+  const hasData = dataSchema !== null;
 
-  // Initialize code from context on mount
-  useEffect(() => {
-    if (!initialized && context?.mlCode) {
-      setUserCode(context.mlCode);
-      setInitialized(true);
-    } else if (!initialized && context) {
-      setInitialized(true);
-    }
-  }, [context?.mlCode, initialized]);
-
-  // Sync if session changes
-  useEffect(() => {
-    if (context?.session.id) {
-      setUserCode(context.mlCode || '');
-      const sessions = getAllSessions();
-      const sessionsWithCode = sessions.filter(s => 
-        s.mlCode && s.mlCode.length > 0 && s.id !== context?.session.id
-      );
-      setPreviousSessions(sessionsWithCode);
-    }
-  }, [context?.session.id]);
-
-  // Save code to context (debounced)
-  const contextRef = useRef(context);
-  contextRef.current = context;
-
-  useEffect(() => {
-    if (!initialized) return;
+  // Build schema context for prompts - includes descriptions
+  const buildSchemaContext = () => {
+    if (!dataSchema) return '';
     
-    const timeout = setTimeout(() => {
-      if (contextRef.current && userCode !== contextRef.current.mlCode) {
-        contextRef.current.setMlCode(userCode);
-      }
-    }, 300);
+    const features = dataSchema.features || [];
+    const featureList = features.map((f: any) => {
+      const desc = f.description ? ` - ${f.description}` : '';
+      return `- ${f.name} (${f.dtype})${desc}`;
+    }).join('\n');
     
-    return () => clearTimeout(timeout);
-  }, [userCode, initialized]);
+    const decisionCols = dataSchema.decision_columns || [];
+    const analystCols = dataSchema.analyst_columns || [];
+    
+    return `
+DATA SCHEMA:
+Total rows: ${dataSchema.dataset_info?.total_samples || 'Unknown'}
+Total columns: ${dataSchema.dataset_info?.total_features || features.length}
 
-  const handleAnalyzeCode = async () => {
-    if (!userCode.trim()) return;
-    
-    context?.setMlCode(userCode);
-    
+COLUMNS (with descriptions):
+${featureList}
+
+DECISION COLUMNS (target variables for modeling):
+${decisionCols.length > 0 ? decisionCols.map((c: string) => `- ${c}`).join('\n') : '- l1_decision, l2_decision, true_fraud_flag'}
+
+ANALYST ATTRIBUTE COLUMNS:
+${analystCols.length > 0 ? analystCols.slice(0, 10).map((c: string) => `- ${c}`).join('\n') : '- l1_analyst_id, l1_tenure_months, l2_analyst_id, etc.'}
+`;
+  };
+
+  // Get full schema JSON for API
+  const getSchemaJson = () => {
+    if (!dataSchema) return undefined;
+    return JSON.stringify(dataSchema, null, 2);
+  };
+
+  const handleGenerateModel = async (modelType: typeof MODEL_TYPES[0]) => {
+    if (!hasData) return;
+
     setLoading(true);
-    const newMessages: ChatMessage[] = [...messages, { 
-      type: 'user', 
-      content: `Analyze my code and generate the \`explain_global()\` function:\n\n\`\`\`python\n${userCode.substring(0, 200)}${userCode.length > 200 ? '...' : ''}\n\`\`\``
-    }];
+    
+    const userMessage = `Generate ${modelType.label} code to understand analyst decisions`;
+    const newMessages: ChatMessage[] = [...messages, { type: 'user', content: userMessage }];
     setMessages(newMessages);
 
     try {
-      const res = await guideCode(sessionId, 
-        `Here is my model code. Please analyze it and write a complete Python function called 'explain_global()' that generates a Global JSON.
+      const fullPrompt = `${modelType.prompt}
 
-MY CODE:
+DATA SCHEMA CONTEXT:
+${buildSchemaContext()}
 
-${userCode}`
-      );
+REQUIREMENTS:
+- Use pandas for data manipulation
+- Use scikit-learn for modeling (DecisionTreeClassifier, LogisticRegression)
+- Use scipy.stats for statistical tests (chi2_contingency, ttest_ind)
+- Include clear comments explaining each step
+- Handle missing values appropriately (drop or impute)
+- Make the code production-ready and well-documented
+- The output function should return a dictionary/JSON that can be used in the Global JSON`;
+
+      // Pass the full data schema JSON to the backend
+      const res = await guideCode(sessionId, fullPrompt, getSchemaJson());
+      
+      // Save the generated code to context
+      if (res.response) {
+        context?.setMlCode(res.response);
+      }
+      
       setMessages([...newMessages, { type: 'ai', content: res.response }]);
     } catch (e) {
-      setMessages([...newMessages, { type: 'ai', content: "Failed to analyze code. Please check your connection." }]);
+      setMessages([...newMessages, { type: 'ai', content: "Failed to generate code. Please check your connection and try again." }]);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleFollowUp = async (question: string) => {
-    if (!question.trim()) return;
+  const handleCustomPrompt = async () => {
+    if (!customPrompt.trim() || !hasData) return;
+
     setLoading(true);
-    const newMessages: ChatMessage[] = [...messages, { type: 'user', content: question }];
+    
+    const newMessages: ChatMessage[] = [...messages, { type: 'user', content: customPrompt }];
     setMessages(newMessages);
+    setCustomPrompt('');
 
     try {
-      const res = await guideCode(sessionId, question);
+      const fullPrompt = `${customPrompt}
+
+CONTEXT: We are building mathematical models to understand how fraud analysts make decisions.
+The goal is to use Decision Trees, Logistic Regression, and statistical tests to identify:
+- What factors drive L1 and L2 analyst decisions (l1_decision, l2_decision columns)
+- Shadow rules (undocumented patterns in analyst behavior)
+- Potential biases in analyst decisions
+- Accuracy of analyst decisions vs true_fraud_flag
+
+DATA SCHEMA:
+${buildSchemaContext()}
+
+Generate Python code that addresses the request above.`;
+
+      // Pass the full data schema JSON to the backend
+      const res = await guideCode(sessionId, fullPrompt, getSchemaJson());
+      
+      if (res.response) {
+        context?.setMlCode(res.response);
+      }
+      
       setMessages([...newMessages, { type: 'ai', content: res.response }]);
     } catch (e) {
-      setMessages([...newMessages, { type: 'ai', content: "Failed to respond." }]);
+      setMessages([...newMessages, { type: 'ai', content: "Failed to generate code. Please try again." }]);
     } finally {
       setLoading(false);
     }
@@ -124,12 +263,7 @@ ${userCode}`
 
   const handleClearChat = () => {
     setMessages([]);
-  };
-
-  const handleLoadPreviousCode = (code: string) => {
-    setUserCode(code);
-    context?.setMlCode(code);
-    setShowHistory(false);
+    context?.setMlCode('');
   };
 
   const copyToClipboard = (text: string) => {
@@ -138,483 +272,265 @@ ${userCode}`
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const copySuggestion = (suggestionId: string, text: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedSuggestionId(suggestionId);
-    setTimeout(() => setCopiedSuggestionId(null), 2000);
-  };
-
-  const useSuggestionInChat = async (suggestion: typeof suggestions[0]) => {
-    if (!userCode.trim()) {
-      // If no code, just show a message
-      setMessages([...messages, { 
-        type: 'ai', 
-        content: "Please paste your ML code first, then I can apply the suggestion." 
-      }]);
-      return;
-    }
-    
-    setLoading(true);
-    const suggestionPrompt = `Based on this suggestion from our previous chat, please update the explain_global() function:
-
-SUGGESTION: ${suggestion.description}
-
-Please regenerate the explain_global() function incorporating this improvement.
-
-MY CODE:
-${userCode}`;
-
-    const newMessages: ChatMessage[] = [...messages, { 
-      type: 'user', 
-      content: `Apply suggestion: "${suggestion.title}"\n\n${suggestion.description}`
-    }];
-    setMessages(newMessages);
-
-    try {
-      const res = await guideCode(sessionId, suggestionPrompt);
-      setMessages([...newMessages, { type: 'ai', content: res.response }]);
-      // Dismiss the suggestion after using it
-      context?.dismissSuggestion(suggestion.id);
-    } catch (e) {
-      setMessages([...newMessages, { type: 'ai', content: "Failed to apply suggestion. Please try again." }]);
-    } finally {
-      setLoading(false);
-    }
+  const extractCodeBlock = (content: string) => {
+    const match = content.match(/```python\n([\s\S]*?)```/);
+    return match ? match[1] : null;
   };
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    const now = new Date();
-    const diff = now.getTime() - date.getTime();
-    
-    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-    if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-    if (diff < 604800000) return `${Math.floor(diff / 86400000)}d ago`;
-    return date.toLocaleDateString();
-  };
-
-  const getCodePreview = (code: string, maxLength: number = 100) => {
-    const preview = code.substring(0, maxLength);
-    return preview.length < code.length ? preview + '...' : preview;
-  };
+  // Check if we have generated code
+  const hasGeneratedCode = context?.mlCode && context.mlCode.length > 0;
 
   return (
-    <div className="space-y-4 h-[calc(100vh-220px)] flex flex-col">
-      {/* Suggestions Banner from Global Chat */}
-      <AnimatePresence>
-        {hasActiveSuggestions && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: 'auto' }}
-            exit={{ opacity: 0, height: 0 }}
-            className="flex-shrink-0"
-          >
-            <div className="bg-gradient-to-r from-amber-500/20 to-orange-500/20 border border-amber-500/40 rounded-xl p-4">
-              <div className="flex items-start gap-3">
-                <div className="p-2 bg-amber-500/20 rounded-lg flex-shrink-0">
-                  <Lightbulb className="w-5 h-5 text-amber-400" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-2">
-                    <h4 className="text-sm font-semibold text-amber-300">
-                      Suggestions from Chat ({suggestions.length})
-                    </h4>
-                    <span className="text-xs text-amber-400/60 flex items-center gap-1">
-                      <MessageSquare className="w-3 h-3" />
-                      From Explore Global
-                    </span>
-                  </div>
-                  <div className="space-y-2 max-h-[180px] overflow-y-auto">
-                    {suggestions.map((suggestion) => (
-                      <div key={suggestion.id} className="bg-slate-900/50 rounded-lg p-3">
-                        <div className="flex items-start gap-2">
-                          <div className="flex-1 min-w-0">
-                            <p className="text-xs text-white font-medium mb-1">{suggestion.title}</p>
-                            <p className="text-xs text-amber-200/70 mb-2">{suggestion.description}</p>
-                          </div>
-                          <div className="flex items-center gap-1 flex-shrink-0">
-                            <button
-                              onClick={() => copySuggestion(suggestion.id, suggestion.description)}
-                              className="p-1.5 hover:bg-slate-800 rounded text-slate-400 hover:text-emerald-400 transition-colors"
-                              title="Copy suggestion"
-                            >
-                              {copiedSuggestionId === suggestion.id ? (
-                                <Check className="w-3.5 h-3.5 text-emerald-400" />
-                              ) : (
-                                <Copy className="w-3.5 h-3.5" />
-                              )}
-                            </button>
-                            <button
-                              onClick={() => context?.dismissSuggestion(suggestion.id)}
-                              className="p-1.5 hover:bg-slate-800 rounded text-slate-400 hover:text-red-400 transition-colors"
-                              title="Dismiss"
-                            >
-                              <X className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2 mt-2 pt-2 border-t border-slate-800/50">
-                          <button
-                            onClick={() => useSuggestionInChat(suggestion)}
-                            disabled={loading}
-                            className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-amber-500/20 to-orange-500/20 hover:from-amber-500/30 hover:to-orange-500/30 border border-amber-500/40 rounded-md text-xs text-amber-200 hover:text-white transition-all disabled:opacity-50"
-                          >
-                            <Wand2 className="w-3 h-3" />
-                            <span>Apply & Regenerate</span>
-                          </button>
-                          <button
-                            onClick={() => copySuggestion(suggestion.id, suggestion.description)}
-                            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-800/50 hover:bg-slate-800 rounded-md text-xs text-slate-300 hover:text-white transition-colors"
-                          >
-                            {copiedSuggestionId === suggestion.id ? (
-                              <>
-                                <Check className="w-3 h-3 text-emerald-400" />
-                                <span className="text-emerald-400">Copied!</span>
-                              </>
-                            ) : (
-                              <>
-                                <Copy className="w-3 h-3" />
-                                <span>Copy</span>
-                              </>
-                            )}
-                          </button>
-                          <span className="text-xs text-slate-500 ml-auto">
-                            {new Date(suggestion.timestamp).toLocaleTimeString()}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="flex items-center gap-2 mt-3">
-                    <button
-                      onClick={() => context?.clearSuggestions()}
-                      className="text-xs text-slate-400 hover:text-white transition-colors"
-                    >
-                      Dismiss all
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+    <div className="max-w-5xl mx-auto">
+      {/* Header */}
+      <div className="text-center mb-8">
+        <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-violet-500 to-purple-600 rounded-2xl mb-4 shadow-lg shadow-violet-500/20">
+          <Code2 className="w-8 h-8 text-white" />
+        </div>
+        <h2 className="text-3xl font-bold text-white mb-2">Code Generator</h2>
+        <p className="text-slate-400 max-w-lg mx-auto">
+          Generate Python code with mathematical models to understand how L1 and L2 analysts make fraud decisions.
+        </p>
+      </div>
 
-      {/* Load from Previous Sessions */}
-      {previousSessions.length > 0 && (
-        <div className="bg-[#0d1117] border border-slate-800 rounded-xl overflow-hidden flex-shrink-0">
-          <button
-            onClick={() => setShowHistory(!showHistory)}
-            className="w-full px-4 py-3 flex items-center justify-between hover:bg-slate-800/30 transition-colors"
-          >
-            <div className="flex items-center gap-2">
-              <History className="w-4 h-4 text-amber-400" />
-              <span className="text-sm font-medium text-white">Load Code from Previous Sessions</span>
-              <span className="text-xs text-slate-500">({previousSessions.length} available)</span>
-            </div>
-            {showHistory ? (
-              <ChevronUp className="w-4 h-4 text-slate-400" />
-            ) : (
-              <ChevronDown className="w-4 h-4 text-slate-400" />
-            )}
-          </button>
-          
-          <AnimatePresence>
-            {showHistory && (
-              <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: 'auto', opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ duration: 0.2 }}
-                className="overflow-hidden"
-              >
-                <div className="p-3 border-t border-slate-800 space-y-2 max-h-[180px] overflow-y-auto">
-                  {previousSessions.map((session) => (
-                    <div
-                      key={session.id}
-                      className="group p-3 bg-slate-900/50 hover:bg-slate-800/50 border border-slate-800 rounded-lg cursor-pointer transition-all"
-                      onClick={() => handleLoadPreviousCode(session.mlCode)}
-                    >
-                      <div className="flex items-start justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                          <FileCode className="w-4 h-4 text-violet-400" />
-                          <span className="text-sm font-medium text-white">{session.name}</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-slate-500">{formatDate(session.updatedAt)}</span>
-                          <span className="text-xs text-emerald-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                            Click to load →
-                          </span>
-                        </div>
-                      </div>
-                      <pre className="text-xs text-slate-400 font-mono truncate bg-slate-950/50 p-2 rounded">
-                        {getCodePreview(session.mlCode, 120)}
-                      </pre>
-                    </div>
-                  ))}
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+      {/* Data requirement check */}
+      {!hasData && (
+        <div className="mb-6 p-4 bg-amber-500/10 border border-amber-500/30 rounded-xl">
+          <div className="flex items-center gap-2 text-amber-300">
+            <AlertTriangle className="w-5 h-5" />
+            <span className="font-medium">Data Required</span>
+          </div>
+          <p className="text-sm text-amber-200/80 mt-1">
+            Please upload your fraud alert data first to generate analysis code.
+          </p>
         </div>
       )}
 
-      {/* Main Editor and Chat */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 flex-1 min-h-0">
-        {/* Left: Code Input */}
-        <div className="flex flex-col min-h-0">
-          <div className="mb-4 flex-shrink-0">
-            <h2 className="text-2xl font-bold text-white flex items-center gap-3">
-              <div className="p-2 bg-gradient-to-br from-violet-500 to-purple-600 rounded-lg">
-                <Code2 className="w-5 h-5 text-white" />
-              </div>
-              Share Your ML Code
-            </h2>
-            <p className="text-slate-400 mt-2 text-sm">
-              Paste your model training/inference code. I'll generate a function to create the Global JSON.
-            </p>
+      {/* Model Type Selection */}
+      {hasData && messages.length === 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mb-8"
+        >
+          <h3 className="text-sm font-medium text-slate-400 mb-4 text-center">Choose a Mathematical Model</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {MODEL_TYPES.map((model) => {
+              const Icon = model.icon;
+              return (
+                <button
+                  key={model.id}
+                  onClick={() => handleGenerateModel(model)}
+                  disabled={loading}
+                  className={`flex items-start gap-4 p-4 rounded-xl border transition-all text-left hover:scale-[1.02] ${
+                    loading ? 'opacity-50 cursor-not-allowed' : 'hover:border-slate-600'
+                  } bg-slate-900/50 border-slate-800`}
+                >
+                  <div className={`p-2 rounded-lg ${model.bg}`}>
+                    <Icon className={`w-5 h-5 ${model.color}`} />
+                  </div>
+                  <div className="flex-1">
+                    <div className="font-medium text-white">{model.label}</div>
+                    <div className="text-xs text-slate-500 mt-0.5">{model.description}</div>
+                  </div>
+                  <Wand2 className="w-4 h-4 text-slate-600" />
+                </button>
+              );
+            })}
           </div>
+        </motion.div>
+      )}
 
-          <div className="flex-1 flex flex-col bg-[#0d1117] border border-slate-800 rounded-2xl overflow-hidden shadow-2xl min-h-0">
-            <div className="flex items-center gap-2 px-4 py-3 bg-slate-900/50 border-b border-slate-800 flex-shrink-0">
-              <div className="flex gap-1.5">
-                <div className="w-3 h-3 rounded-full bg-red-500/80" />
-                <div className="w-3 h-3 rounded-full bg-yellow-500/80" />
-                <div className="w-3 h-3 rounded-full bg-green-500/80" />
-              </div>
-              <span className="text-xs text-slate-500 font-mono ml-2">your_model.py</span>
-              {userCode && (
-                <span className="text-xs text-emerald-400 ml-auto flex items-center gap-1">
-                  <Check className="w-3 h-3" />
-                  {userCode.length} chars
-                </span>
-              )}
-            </div>
-            
-            <textarea
-              value={userCode}
-              onChange={e => setUserCode(e.target.value)}
-              placeholder={`# Paste your ML code here...\n\nimport sklearn\nfrom sklearn.ensemble import RandomForestClassifier\n\n# model = RandomForestClassifier(...)\n# model.fit(X_train, y_train)`}
-              className="flex-1 bg-transparent p-4 text-sm font-mono text-emerald-300 resize-none outline-none placeholder-slate-600 min-h-0"
-              spellCheck={false}
-            />
-            
-            <div className="p-4 border-t border-slate-800 bg-slate-900/30 flex-shrink-0">
+      {/* Chat Interface */}
+      <div className="bg-[#0d1117] border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
+        {/* Chat Header */}
+        <div className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-violet-900/20 to-purple-900/20 border-b border-slate-800">
+          <div className="flex items-center gap-2">
+            <Bot className="w-4 h-4 text-violet-400" />
+            <span className="text-sm font-medium text-violet-300">Code Generator</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {hasData && (
+              <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full">
+                ✓ {dataSchema?.dataset_info?.total_features || dataSchema?.features?.length || 0} columns
+              </span>
+            )}
+            {messages.length > 0 && (
               <button
-                onClick={handleAnalyzeCode}
-                disabled={loading || !userCode.trim()}
-                className="w-full bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white py-3 rounded-xl font-medium flex items-center justify-center gap-2 transition-all shadow-lg shadow-violet-500/20"
+                onClick={handleClearChat}
+                className="flex items-center gap-1 text-xs text-slate-500 hover:text-white transition-colors"
               >
-                <Sparkles className="w-4 h-4" />
-                {loading ? 'Analyzing...' : 'Generate explain_global() Function'}
+                <RotateCcw className="w-3 h-3" />
+                Clear
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Messages */}
+        <div className="h-[400px] overflow-y-auto p-4 space-y-4">
+          {messages.length === 0 && hasData && (
+            <div className="flex flex-col items-center justify-center h-full text-center py-12">
+              <div className="w-16 h-16 bg-violet-500/10 rounded-full flex items-center justify-center mb-4">
+                <Sparkles className="w-8 h-8 text-violet-400" />
+              </div>
+              <h3 className="text-lg font-semibold text-white mb-2">Ready to Generate Code</h3>
+              <p className="text-slate-400 text-sm max-w-xs">
+                Select a mathematical model above or describe what you want to understand about analyst decisions.
+              </p>
+            </div>
+          )}
+
+          {messages.map((m, i) => (
+            <motion.div
+              key={i}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className={`flex ${m.type === 'user' ? 'justify-end' : 'justify-start'}`}
+            >
+              <div className={`max-w-[90%] rounded-xl p-4 text-sm ${
+                m.type === 'user'
+                  ? 'bg-violet-600/30 border border-violet-500/30 text-violet-100'
+                  : 'bg-slate-800/50 border border-slate-700/50 text-slate-200'
+              }`}>
+                {m.type === 'ai' && extractCodeBlock(m.content) && (
+                  <div className="mb-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs text-violet-400 font-mono">Generated Analysis Code</span>
+                      <button
+                        onClick={() => copyToClipboard(extractCodeBlock(m.content) || '')}
+                        className="flex items-center gap-1 text-xs text-slate-400 hover:text-white transition-colors"
+                      >
+                        {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                        {copied ? 'Copied!' : 'Copy'}
+                      </button>
+                    </div>
+                    <pre className="bg-slate-950 p-3 rounded-lg overflow-x-auto text-xs text-violet-300 font-mono max-h-[300px] overflow-y-auto">
+                      {extractCodeBlock(m.content)}
+                    </pre>
+                  </div>
+                )}
+                <div className="prose prose-invert max-w-none text-sm leading-relaxed">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      code(props: any) {
+                        const { node, className, children, ...rest } = props;
+                        const match = /language-(\w+)/.exec(className || '');
+                        const isInline = !match && !String(children).includes('\n');
+                        return !isInline && match ? (
+                          <pre className="bg-slate-950 p-3 rounded-lg overflow-x-auto text-xs text-violet-300 font-mono">
+                            <code className={className} {...rest}>
+                              {children}
+                            </code>
+                          </pre>
+                        ) : (
+                          <code className="bg-slate-700/50 text-slate-200 px-1 rounded-sm text-xs" {...rest}>
+                            {children}
+                          </code>
+                        );
+                      },
+                      a(props: any) {
+                        const { node, ...rest } = props;
+                        return <a className="text-violet-400 hover:underline" {...rest} />;
+                      },
+                      p(props: any) {
+                        const { node, ...rest } = props;
+                        return <p className="mb-2 last:mb-0" {...rest} />;
+                      },
+                      ul(props: any) {
+                        const { node, ...rest } = props;
+                        return <ul className="list-disc list-inside mb-2" {...rest} />;
+                      },
+                      ol(props: any) {
+                        const { node, ...rest } = props;
+                        return <ol className="list-decimal list-inside mb-2" {...rest} />;
+                      },
+                      li(props: any) {
+                        const { node, ...rest } = props;
+                        return <li className="mb-1" {...rest} />;
+                      },
+                    }}
+                  >
+                    {m.type === 'ai' ? m.content.replace(/```python\n[\s\S]*?```/g, '[Code shown above]') : m.content}
+                  </ReactMarkdown>
+                </div>
+              </div>
+            </motion.div>
+          ))}
+
+          {loading && (
+            <div className="flex items-center gap-2 text-slate-400 text-sm">
+              <div className="flex gap-1">
+                <div className="w-2 h-2 bg-violet-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                <div className="w-2 h-2 bg-violet-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                <div className="w-2 h-2 bg-violet-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+              </div>
+              <span>Generating analysis code...</span>
+            </div>
+          )}
+          <div ref={chatEndRef} />
+        </div>
+
+        {/* Input Section */}
+        {hasData && (
+          <div className="p-4 border-t border-slate-800 bg-slate-900/30">
+            {/* Quick Actions */}
+            {messages.length > 0 && (
+              <div className="flex gap-2 mb-3 flex-wrap">
+                {MODEL_TYPES.slice(0, 4).map((model) => (
+                  <button
+                    key={model.id}
+                    onClick={() => handleGenerateModel(model)}
+                    disabled={loading}
+                    className="px-3 py-1 text-xs bg-slate-800/50 hover:bg-slate-800 border border-slate-700/50 rounded-lg text-slate-400 hover:text-white transition-colors disabled:opacity-50"
+                  >
+                    {model.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Custom Input */}
+            <div className="flex gap-2">
+              <input
+                ref={inputRef}
+                type="text"
+                value={customPrompt}
+                onChange={e => setCustomPrompt(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleCustomPrompt()}
+                placeholder="Describe what you want to understand about analyst decisions..."
+                className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-4 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-violet-500/50 transition-colors"
+                disabled={loading}
+              />
+              <button
+                onClick={handleCustomPrompt}
+                disabled={loading || !customPrompt.trim()}
+                className="px-4 py-2.5 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 disabled:opacity-50 rounded-lg text-white transition-all"
+              >
+                <Send className="w-4 h-4" />
               </button>
             </div>
           </div>
-        </div>
-
-        {/* Right: Chat */}
-        <div className="flex flex-col bg-[#0d1117] border border-slate-800 rounded-2xl overflow-hidden shadow-2xl min-h-0">
-          <div className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-violet-900/30 to-purple-900/30 border-b border-slate-800 flex-shrink-0">
-            <div className="flex items-center gap-2">
-              <Bot className="w-4 h-4 text-violet-400" />
-              <span className="text-sm font-medium text-violet-300">Code Assistant</span>
-              {messages.length > 0 && (
-                <span className="text-xs text-slate-500">({messages.length} messages)</span>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              {messages.length > 0 && (
-                <button
-                  onClick={handleClearChat}
-                  className="flex items-center gap-1 px-2 py-1 text-xs text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
-                  title="Clear chat"
-                >
-                  <RotateCcw className="w-3 h-3" />
-                </button>
-              )}
-              {messages.length > 0 && userCode && (
-                <button
-                  onClick={onComplete}
-                  className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 rounded-lg text-emerald-300 text-xs font-medium transition-all"
-                >
-                  Continue <ArrowRight className="w-3 h-3" />
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
-            {messages.length === 0 && (
-              <div className="flex flex-col items-center justify-center h-full text-center py-12">
-                <div className="w-16 h-16 bg-violet-500/10 rounded-full flex items-center justify-center mb-4">
-                  <Sparkles className="w-8 h-8 text-violet-400" />
-                </div>
-                <h3 className="text-lg font-semibold text-white mb-2">
-                  {context?.mlCode ? 'Code Loaded' : 'Ready to Analyze'}
-                </h3>
-                <p className="text-slate-400 text-sm max-w-xs">
-                  {context?.mlCode 
-                    ? 'Click "Generate" to create the explain_global() function.'
-                    : 'Paste your code and I\'ll generate a custom function for your model.'
-                  }
-                </p>
-              </div>
-            )}
-            
-            {messages.map((m, i) => (
-              <motion.div
-                key={i}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                className={`flex ${m.type === 'user' ? 'justify-end' : 'justify-start'}`}
-              >
-                <div className={`max-w-[90%] rounded-xl p-4 text-sm ${
-                  m.type === 'user'
-                    ? 'bg-violet-600/30 border border-violet-500/30 text-violet-100'
-                    : 'bg-slate-800/50 border border-slate-700/50 text-slate-200'
-                }`}>
-                  {m.type === 'user' ? (
-                    <div className="whitespace-pre-wrap text-sm">{m.content}</div>
-                  ) : (
-                    <div className="markdown-content text-sm">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        components={{
-                          h1: ({ children }: { children?: ReactNode }) => <h1 className="text-xl font-bold text-white mt-4 mb-2">{children}</h1>,
-                          h2: ({ children }: { children?: ReactNode }) => <h2 className="text-lg font-bold text-white mt-4 mb-2">{children}</h2>,
-                          h3: ({ children }: { children?: ReactNode }) => <h3 className="text-base font-bold text-white mt-3 mb-1">{children}</h3>,
-                          h4: ({ children }: { children?: ReactNode }) => <h4 className="text-sm font-bold text-white mt-2 mb-1">{children}</h4>,
-                          p: ({ children }: { children?: ReactNode }) => <p className="mb-3 leading-relaxed">{children}</p>,
-                          ul: ({ children }: { children?: ReactNode }) => <ul className="list-disc list-inside mb-3 space-y-1">{children}</ul>,
-                          ol: ({ children }: { children?: ReactNode }) => <ol className="list-decimal list-inside mb-3 space-y-1">{children}</ol>,
-                          li: ({ children }: { children?: ReactNode }) => <li className="text-slate-300">{children}</li>,
-                          code: ({ className, children, ...props }: { className?: string; children?: ReactNode }) => {
-                            const match = /language-(\w+)/.exec(className || '');
-                            const isInline = !match;
-                            const codeString = String(children).replace(/\n$/, '');
-                            
-                            if (isInline) {
-                              return (
-                                <code className="bg-slate-900 text-violet-300 px-1.5 py-0.5 rounded text-xs font-mono" {...props}>
-                                  {children}
-                                </code>
-                              );
-                            }
-                            
-                            return (
-                              <div className="relative group my-3">
-                                <div className="flex items-center justify-between bg-slate-900 px-3 py-1.5 rounded-t-lg border-b border-slate-700">
-                                  <span className="text-xs text-slate-500 font-mono">{match?.[1] || 'code'}</span>
-                                  <button
-                                    onClick={() => copyToClipboard(codeString)}
-                                    className="flex items-center gap-1 text-xs text-slate-400 hover:text-white transition-colors"
-                                  >
-                                    {copied ? (
-                                      <>
-                                        <Check className="w-3 h-3 text-emerald-400" />
-                                        <span className="text-emerald-400">Copied</span>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <Copy className="w-3 h-3" />
-                                        <span>Copy</span>
-                                      </>
-                                    )}
-                                  </button>
-                                </div>
-                                <pre className="bg-slate-950 p-3 rounded-b-lg overflow-x-auto max-h-[300px] overflow-y-auto">
-                                  <code className="text-xs font-mono text-emerald-300" {...props}>
-                                    {children}
-                                  </code>
-                                </pre>
-                              </div>
-                            );
-                          },
-                          blockquote: ({ children }: { children?: ReactNode }) => (
-                            <blockquote className="border-l-4 border-violet-500 pl-4 my-3 text-slate-400 italic">
-                              {children}
-                            </blockquote>
-                          ),
-                          table: ({ children }: { children?: ReactNode }) => (
-                            <div className="overflow-x-auto my-3">
-                              <table className="min-w-full border border-slate-700 rounded-lg">{children}</table>
-                            </div>
-                          ),
-                          thead: ({ children }: { children?: ReactNode }) => <thead className="bg-slate-800">{children}</thead>,
-                          th: ({ children }: { children?: ReactNode }) => <th className="px-3 py-2 text-left text-xs font-semibold text-white border-b border-slate-700">{children}</th>,
-                          td: ({ children }: { children?: ReactNode }) => <td className="px-3 py-2 text-xs text-slate-300 border-b border-slate-800">{children}</td>,
-                          a: ({ href, children }: { href?: string; children?: ReactNode }) => (
-                            <a href={href} target="_blank" rel="noopener noreferrer" className="text-violet-400 hover:text-violet-300 underline">
-                              {children}
-                            </a>
-                          ),
-                          strong: ({ children }: { children?: ReactNode }) => <strong className="font-bold text-white">{children}</strong>,
-                          em: ({ children }: { children?: ReactNode }) => <em className="italic text-slate-300">{children}</em>,
-                          hr: () => <hr className="border-slate-700 my-4" />,
-                        }}
-                      >
-                        {m.content}
-                      </ReactMarkdown>
-                    </div>
-                  )}
-                </div>
-              </motion.div>
-            ))}
-            
-            {loading && (
-              <div className="flex items-center gap-2 text-slate-400 text-sm">
-                <div className="flex gap-1">
-                  <div className="w-2 h-2 bg-violet-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <div className="w-2 h-2 bg-violet-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <div className="w-2 h-2 bg-violet-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                </div>
-                <span>Generating function...</span>
-              </div>
-            )}
-            <div ref={chatEndRef} />
-          </div>
-
-          {messages.length > 0 && (
-            <div className="p-4 border-t border-slate-800 bg-slate-900/30 flex-shrink-0">
-              <FollowUpInput onSend={handleFollowUp} loading={loading} />
-            </div>
-          )}
-        </div>
+        )}
       </div>
-    </div>
-  );
-}
 
-function FollowUpInput({ onSend, loading }: { onSend: (msg: string) => void; loading: boolean }) {
-  const [input, setInput] = useState('');
-
-  const handleSubmit = () => {
-    if (input.trim() && !loading) {
-      onSend(input);
-      setInput('');
-    }
-  };
-
-  return (
-    <div className="flex gap-2">
-      <input
-        value={input}
-        onChange={e => setInput(e.target.value)}
-        onKeyDown={e => e.key === 'Enter' && handleSubmit()}
-        placeholder="Ask a follow-up question..."
-        className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-4 py-2.5 text-white text-sm focus:ring-2 focus:ring-violet-500 outline-none"
-      />
-      <button
-        onClick={handleSubmit}
-        disabled={loading || !input.trim()}
-        className="bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white p-2.5 rounded-lg transition-colors"
-      >
-        <Send className="w-4 h-4" />
-      </button>
+      {/* Continue Button */}
+      {hasGeneratedCode && (
+        <div className="flex justify-center mt-6">
+          <button
+            onClick={onComplete}
+            className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 rounded-xl text-white font-medium transition-all shadow-lg shadow-violet-500/20"
+          >
+            Continue to Patterns
+            <ArrowRight className="w-4 h-4" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

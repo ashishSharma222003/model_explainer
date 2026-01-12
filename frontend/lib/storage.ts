@@ -12,13 +12,46 @@ export interface CodeSuggestion {
   dismissed: boolean;
 }
 
+// Selected case filter info
+export interface CaseFilterInfo {
+  id: string;
+  column: string;
+  operator: string;
+  value: string;
+  label: string;
+}
+
+// Saved smart filter (user-created or cached)
+export interface SavedSmartFilter {
+  id: string;
+  label: string;
+  description: string;
+  icon?: string;  // Icon name for display
+  color?: string;  // Color class for display
+  filters: CaseFilterInfo[];
+  isBuiltIn: boolean;  // true for default filters, false for user-created
+  createdAt: string;
+  usageCount: number;  // Track popularity
+}
+
+// Selected cases context for transaction analysis
+export interface SelectedCasesContext {
+  selectedCases: Record<string, any>[];
+  filters: CaseFilterInfo[];
+  totalCases: number;
+  selectedAt: string;
+}
+
 // Context snapshot for tracking what data was active during a chat message
 export interface ContextSnapshot {
   hasCode: boolean;
   codeLength?: number;
   globalJsonVersion?: string;
   globalJsonFeatureCount?: number;
-  txnId?: string;
+  txnId?: string;  // Deprecated: use selectedCasesInfo instead
+  // New: selected cases info for transaction analysis
+  selectedCasesCount?: number;
+  activeFilters?: string[];  // Filter labels for display
   timestamp: string;
 }
 
@@ -37,11 +70,51 @@ export interface GeneratedReport {
   title: string;
   generatedAt: string;
   includeCode: boolean;
+  includeSchema: boolean;
   includeChatHistory: boolean;
   includeJsonData: boolean;
   filename: string;
   summary?: string;  // Preview of the report content
   content?: string;  // Full content for viewing later
+}
+
+// Bank guidelines for analyst decision making
+export interface BankGuideline {
+  id: string;
+  title: string;
+  category: 'regulatory' | 'internal' | 'risk' | 'compliance' | 'operational' | 'custom';
+  description: string;
+  rules?: string[];  // Specific rules or criteria
+  source?: string;   // e.g., "RBI Guidelines 2024", "Internal Policy v2.1"
+  priority?: 'critical' | 'high' | 'medium' | 'low';
+  addedAt: string;
+}
+
+// Analyst decision record for a transaction
+export interface AnalystDecision {
+  txnId: string;
+  analystId?: string;
+  modelPrediction: 'fraud' | 'legit';
+  modelScore: number;
+  analystDecision: 'confirmed_fraud' | 'false_positive' | 'escalate' | 'needs_review';
+  decisionReason?: string;
+  reviewNotes?: string;
+  timeSpentMinutes?: number;
+  guidelinesReferenced?: string[];  // IDs of guidelines used
+  decidedAt: string;
+}
+
+// Shadow rule detected from analyst behavior
+export interface DetectedShadowRule {
+  id: string;
+  description: string;
+  pattern: string;  // What pattern was detected
+  frequency: number;  // How often this pattern appears
+  examples: string[];  // Transaction IDs showing this pattern
+  potentialBias?: string;  // If this represents a bias
+  alignsWithGuidelines: boolean;
+  guidelineViolations?: string[];  // Which guidelines this might violate
+  detectedAt: string;
 }
 
 export interface Session {
@@ -50,6 +123,12 @@ export interface Session {
   createdAt: string;
   updatedAt: string;
   mlCode: string;
+  dataSchema: any;  // Data schema analysis (features, target, feature engineering)
+  // CSV data is stored on BACKEND to avoid localStorage quota limits
+  // Use getCsvData() API to fetch it
+  csvFileName: string;  // Original CSV file name
+  hasCsvData: boolean;  // Flag indicating if CSV data is stored on backend
+  csvRowCount: number;  // Number of rows in CSV (for display)
   globalJson: any;
   txnJson: any;
   chatHistory: {
@@ -59,13 +138,73 @@ export interface Session {
   };
   suggestions?: CodeSuggestion[];
   reports?: GeneratedReport[];  // History of generated reports
+  // Bank-specific context
+  guidelines?: BankGuideline[];  // Bank's policies and regulatory guidelines
+  analystDecisions?: AnalystDecision[];  // Historical analyst decisions for analysis
+  detectedShadowRules?: DetectedShadowRule[];  // Detected patterns from analyst behavior
+  // Saved smart filters (user-created filters that persist)
+  savedSmartFilters?: SavedSmartFilter[];
 }
 
 const SESSIONS_KEY = 'model_explainer_sessions';
 const CURRENT_SESSION_KEY = 'model_explainer_current_session';
+const SMART_FILTERS_KEY = 'model_explainer_smart_filters';
 
 export function generateSessionId(): string {
   return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+// ============ Smart Filters Storage ============
+
+export function getGlobalSmartFilters(): SavedSmartFilter[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const data = localStorage.getItem(SMART_FILTERS_KEY);
+    return data ? JSON.parse(data) : [];
+  } catch (e) {
+    console.error('Failed to load smart filters:', e);
+    return [];
+  }
+}
+
+export function saveGlobalSmartFilter(filter: Omit<SavedSmartFilter, 'id' | 'createdAt' | 'usageCount'>): SavedSmartFilter {
+  const filters = getGlobalSmartFilters();
+  
+  const newFilter: SavedSmartFilter = {
+    ...filter,
+    id: `filter_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+    createdAt: new Date().toISOString(),
+    usageCount: 0,
+  };
+  
+  filters.push(newFilter);
+  
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(SMART_FILTERS_KEY, JSON.stringify(filters));
+  }
+  
+  return newFilter;
+}
+
+export function updateSmartFilterUsage(filterId: string): void {
+  const filters = getGlobalSmartFilters();
+  const filter = filters.find(f => f.id === filterId);
+  
+  if (filter) {
+    filter.usageCount++;
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(SMART_FILTERS_KEY, JSON.stringify(filters));
+    }
+  }
+}
+
+export function deleteGlobalSmartFilter(filterId: string): void {
+  const filters = getGlobalSmartFilters();
+  const updatedFilters = filters.filter(f => f.id !== filterId);
+  
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(SMART_FILTERS_KEY, JSON.stringify(updatedFilters));
+  }
 }
 
 export function createNewSession(name?: string): Session {
@@ -76,6 +215,10 @@ export function createNewSession(name?: string): Session {
     createdAt: now,
     updatedAt: now,
     mlCode: '',
+    dataSchema: null,
+    csvFileName: '',
+    hasCsvData: false,
+    csvRowCount: 0,
     globalJson: null,
     txnJson: null,
     chatHistory: {
@@ -85,6 +228,9 @@ export function createNewSession(name?: string): Session {
     },
     suggestions: [],
     reports: [],
+    guidelines: [],
+    analystDecisions: [],
+    detectedShadowRules: [],
   };
 }
 

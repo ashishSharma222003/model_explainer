@@ -5,10 +5,12 @@ Handles saving and loading user sessions with all their data:
 - Global JSON
 - Transaction JSON  
 - Chat histories (code analyzer, global chat, txn chat)
+- CSV Data (stored in separate files to avoid memory issues)
 """
 
 import os
 import json
+import csv
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 from pydantic import BaseModel
@@ -17,6 +19,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 SESSIONS_FILE = "user_sessions.json"
+CSV_DATA_DIR = "session_csv_data"  # Directory to store CSV files per session
 
 
 class ContextSnapshot(BaseModel):
@@ -74,6 +77,10 @@ class Session(BaseModel):
     createdAt: str
     updatedAt: str
     mlCode: str = ""
+    dataSchema: Optional[Dict[str, Any]] = None  # Data schema analysis
+    csvFileName: str = ""  # Original CSV file name
+    hasCsvData: bool = False  # Flag indicating if CSV data is stored on backend
+    csvRowCount: int = 0  # Number of rows in CSV (for display)
     globalJson: Optional[Dict[str, Any]] = None
     txnJson: Optional[Dict[str, Any]] = None
     chatHistory: ChatHistory = ChatHistory()
@@ -81,7 +88,7 @@ class Session(BaseModel):
     reports: List[GeneratedReport] = []  # History of generated reports
     
     # Metadata for quick display
-    step: str = "code"  # Current step: code, global-json, global-chat, txn-json, txn-chat
+    step: str = "code"  # Current step: code, data-schema, global-json, global-chat, txn-json, txn-chat
 
 
 class SessionManager:
@@ -150,14 +157,94 @@ class SessionManager:
         return session_data
     
     def delete_session(self, session_id: str) -> bool:
-        """Delete a session."""
+        """Delete a session and its CSV data."""
         sessions = self._load_from_file()
         if session_id in sessions:
             del sessions[session_id]
             self._save_to_file(sessions)
+            # Also delete CSV file if exists
+            self.delete_csv_data(session_id)
             logger.info(f"Session deleted: {session_id}")
             return True
         return False
+    
+    # ============ CSV Data Management ============
+    
+    def _ensure_csv_dir_exists(self):
+        """Ensure the CSV data directory exists."""
+        if not os.path.exists(CSV_DATA_DIR):
+            os.makedirs(CSV_DATA_DIR)
+    
+    def _get_csv_path(self, session_id: str) -> str:
+        """Get the path to a session's CSV file."""
+        return os.path.join(CSV_DATA_DIR, f"{session_id}.json")
+    
+    def save_csv_data(self, session_id: str, csv_data: List[Dict], file_name: str = "") -> bool:
+        """Save CSV data for a session (stored as JSON for easy access)."""
+        try:
+            self._ensure_csv_dir_exists()
+            csv_path = self._get_csv_path(session_id)
+            
+            with open(csv_path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'fileName': file_name,
+                    'rowCount': len(csv_data),
+                    'data': csv_data
+                }, f)
+            
+            # Update session metadata
+            session = self.get_session(session_id)
+            if session:
+                session['hasCsvData'] = True
+                session['csvFileName'] = file_name
+                session['csvRowCount'] = len(csv_data)
+                self.save_session(session)
+            
+            logger.info(f"CSV data saved for session {session_id}: {len(csv_data)} rows")
+            return True
+        except Exception as e:
+            logger.error(f"Error saving CSV data for session {session_id}: {e}")
+            return False
+    
+    def get_csv_data(self, session_id: str) -> Optional[Dict]:
+        """Get CSV data for a session."""
+        try:
+            csv_path = self._get_csv_path(session_id)
+            if os.path.exists(csv_path):
+                with open(csv_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            return None
+        except Exception as e:
+            logger.error(f"Error loading CSV data for session {session_id}: {e}")
+            return None
+    
+    def get_csv_row(self, session_id: str, row_index: int) -> Optional[Dict]:
+        """Get a single row from the CSV data."""
+        csv_data = self.get_csv_data(session_id)
+        if csv_data and 'data' in csv_data:
+            data = csv_data['data']
+            if 0 <= row_index < len(data):
+                return data[row_index]
+        return None
+    
+    def get_csv_rows_by_column(self, session_id: str, column: str, value: Any) -> List[Dict]:
+        """Get rows where a column matches a value."""
+        csv_data = self.get_csv_data(session_id)
+        if csv_data and 'data' in csv_data:
+            return [row for row in csv_data['data'] if row.get(column) == value]
+        return []
+    
+    def delete_csv_data(self, session_id: str) -> bool:
+        """Delete CSV data for a session."""
+        try:
+            csv_path = self._get_csv_path(session_id)
+            if os.path.exists(csv_path):
+                os.remove(csv_path)
+                logger.info(f"CSV data deleted for session {session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting CSV data for session {session_id}: {e}")
+            return False
     
     def get_session_summary(self, session_id: str) -> Optional[Dict]:
         """Get a summary of a session (for list display)."""

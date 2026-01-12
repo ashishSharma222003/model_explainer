@@ -36,7 +36,7 @@ async def chat_endpoint(
     context: Optional[Dict[str, Any]] = Body(None, embed=True)
 ):
     """
-    Chat with the explainer assistant.
+    Chat with the explainer assistant (global mode).
     Returns structured response with general answer and optional suggestion.
     """
     try:
@@ -50,17 +50,52 @@ async def chat_endpoint(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/chat-txn")
+async def chat_txn_endpoint(
+    session_id: str = Body(..., embed=True),
+    message: str = Body(..., embed=True),
+    context: Optional[Dict[str, Any]] = Body(None, embed=True)
+):
+    """
+    Chat about transaction-level predictions and analyst behavior.
+    Specialized prompting for:
+    - Individual prediction analysis
+    - What-if scenarios  
+    - Risk assessment
+    - Shadow rule detection (undocumented analyst patterns)
+    - Guideline compliance checking
+    
+    Returns structured response with insights for banking fraud analysis workflows.
+    """
+    try:
+        response = await chat_manager.chat_txn(session_id, message, context)
+        return {
+            "response": response.general_answer,
+            "txn_json_suggestion": response.txn_json_suggestion,
+            "what_if_insight": response.what_if_insight,
+            "risk_flag": response.risk_flag,
+            "shadow_rule_detected": response.shadow_rule_detected,
+            "guideline_reference": response.guideline_reference,
+            "compliance_note": response.compliance_note,
+        }
+    except Exception as e:
+        print(f"Error in chat_txn: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/guide-code")
 async def guide_code_endpoint(
     session_id: str = Body(..., embed=True),
-    code: str = Body(..., embed=True)
+    code: str = Body(..., embed=True),
+    data_schema: Optional[str] = Body(None, embed=True)
 ):
     """
-    Analyze user code and provide implementation guide for explain_global function.
-    Uses focused prompt with only global JSON schema.
+    Generate mathematical model code to understand analyst decisions.
+    Uses data schema context to build appropriate ML/statistical models.
     """
     try:
-        response = await chat_manager.guide_code_to_global_json(session_id, code)
+        response = await chat_manager.guide_code_to_global_json(session_id, code, data_schema)
         return {"response": response}
     except Exception as e:
         print(f"Error in guide-code: {e}")
@@ -83,6 +118,23 @@ async def guide_txn_code_endpoint(
         return {"response": response}
     except Exception as e:
         print(f"Error in guide-txn-code: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/guide-schema-code")
+async def guide_schema_code_endpoint(
+    session_id: str = Body(..., embed=True),
+    code: str = Body(..., embed=True)
+):
+    """
+    Analyze user code and provide implementation guide for data schema analysis.
+    Generates analyze_data_schema() function.
+    """
+    try:
+        response = await chat_manager.guide_schema_analysis(session_id, code)
+        return {"response": response}
+    except Exception as e:
+        print(f"Error in guide-schema-code: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -153,6 +205,75 @@ async def delete_session(session_id: str):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+# ============ CSV Data Endpoints ============
+
+@app.post("/sessions/{session_id}/csv")
+async def upload_csv_data(
+    session_id: str,
+    csv_data: List[Dict[str, Any]] = Body(..., embed=True),
+    file_name: str = Body("", embed=True)
+):
+    """Upload CSV data for a session (stored on backend to avoid localStorage limits)."""
+    try:
+        success = session_manager.save_csv_data(session_id, csv_data, file_name)
+        if success:
+            return {
+                "success": True,
+                "message": f"Saved {len(csv_data)} rows for session {session_id}",
+                "rowCount": len(csv_data)
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to save CSV data")
+    except Exception as e:
+        print(f"Error uploading CSV data: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/sessions/{session_id}/csv")
+async def get_csv_data(session_id: str):
+    """Get CSV data for a session."""
+    try:
+        csv_data = session_manager.get_csv_data(session_id)
+        if csv_data:
+            return csv_data
+        else:
+            return {"fileName": "", "rowCount": 0, "data": []}
+    except Exception as e:
+        print(f"Error getting CSV data: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/sessions/{session_id}/csv/row/{row_index}")
+async def get_csv_row(session_id: str, row_index: int):
+    """Get a single row from the CSV data."""
+    try:
+        row = session_manager.get_csv_row(session_id, row_index)
+        if row:
+            return {"row": row, "index": row_index}
+        else:
+            raise HTTPException(status_code=404, detail="Row not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting CSV row: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/sessions/{session_id}/csv/search")
+async def search_csv_data(
+    session_id: str,
+    column: str,
+    value: str
+):
+    """Search CSV data by column value."""
+    try:
+        rows = session_manager.get_csv_rows_by_column(session_id, column, value)
+        return {"rows": rows, "count": len(rows)}
+    except Exception as e:
+        print(f"Error searching CSV data: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/sessions/{session_id}/summary")
 async def get_session_summary(session_id: str):
     """Get a summary of a specific session."""
@@ -177,6 +298,7 @@ async def generate_report(
     report_type: str = Body("executive", embed=True),
     format: str = Body("markdown", embed=True),
     include_code: bool = Body(False, embed=True),
+    include_schema: bool = Body(True, embed=True),
     include_chat_history: bool = Body(True, embed=True),
     include_json_data: bool = Body(False, embed=True)
 ):
@@ -193,6 +315,7 @@ async def generate_report(
             report_type=ReportType(report_type),
             format=ReportFormat(format),
             include_code=include_code,
+            include_schema=include_schema,
             include_chat_history=include_chat_history,
             include_json_data=include_json_data
         )
@@ -210,6 +333,7 @@ async def generate_report(
             "title": report.get("title", f"{report_type.capitalize()} Report"),
             "generatedAt": datetime.now().isoformat(),
             "includeCode": include_code,
+            "includeSchema": include_schema,
             "includeChatHistory": include_chat_history,
             "includeJsonData": include_json_data,
             "filename": report.get("filename", f"report.{format}"),

@@ -44,10 +44,10 @@ export default function GlobalJsonInput({ onComplete }: { onComplete: () => void
         return { valid: false, error: 'JSON must be an object', data: null };
       }
       
-      // Check for recommended fields
+      // Check for recommended fields (analyst decision focus)
       const warnings: string[] = [];
-      if (!parsed.global_importance) warnings.push('Missing global_importance array');
-      if (!parsed.model_version) warnings.push('Missing model_version');
+      if (!parsed.l1_decision_factors && !parsed.global_importance) warnings.push('Missing l1_decision_factors or global_importance array');
+      if (!parsed.analysis_version && !parsed.model_version) warnings.push('Missing analysis_version');
       
       return { 
         valid: true, 
@@ -88,9 +88,9 @@ export default function GlobalJsonInput({ onComplete }: { onComplete: () => void
         <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-cyan-500 to-blue-600 rounded-2xl mb-4 shadow-lg shadow-cyan-500/20">
           <FileJson className="w-8 h-8 text-white" />
         </div>
-        <h2 className="text-3xl font-bold text-white mb-2">Paste Global JSON</h2>
+        <h2 className="text-3xl font-bold text-white mb-2">Paste Analyst Patterns JSON</h2>
         <p className="text-slate-400 max-w-md mx-auto">
-          Run the <code className="text-cyan-300 bg-cyan-900/30 px-1.5 py-0.5 rounded">explain_global()</code> function 
+          Run the <code className="text-cyan-300 bg-cyan-900/30 px-1.5 py-0.5 rounded">analyze_analyst_decisions()</code> function 
           on your machine and paste the output JSON here.
         </p>
       </div>
@@ -104,7 +104,7 @@ export default function GlobalJsonInput({ onComplete }: { onComplete: () => void
               <div className="w-3 h-3 rounded-full bg-yellow-500/80" />
               <div className="w-3 h-3 rounded-full bg-green-500/80" />
             </div>
-            <span className="text-xs text-slate-500 font-mono ml-2">global_explanation.json</span>
+            <span className="text-xs text-slate-500 font-mono ml-2">analyst_patterns.json</span>
           </div>
           {jsonInput && (
             <button
@@ -126,15 +126,21 @@ export default function GlobalJsonInput({ onComplete }: { onComplete: () => void
               setError(null);
             }}
             placeholder={`{
-  "model_version": "fraud_detector_v2",
-  "generated_at": "2025-01-02T10:00:00Z",
-  "global_importance": [
-    { "feature_or_group": "transaction_amount", "importance": 0.32, "direction": "positive" },
-    { "feature_or_group": "merchant_category", "importance": 0.18, "direction": "negative" }
+  "analysis_version": "analyst_patterns_v1",
+  "generated_at": "2025-01-12T10:00:00Z",
+  "dataset_summary": {
+    "total_alerts": 50000,
+    "fraud_rate": 0.05,
+    "l1_override_rate": 0.15,
+    "l2_override_rate": 0.08
+  },
+  "l1_decision_factors": [
+    { "factor": "transaction_amount", "importance": 0.32, "direction": "increases_fraud_call" },
+    { "factor": "velocity_score", "importance": 0.18, "direction": "increases_fraud_call" }
   ],
-  "global_trends": [...],
-  "reliability": { "sample_size": 10000, "stability_score": 0.94 },
-  "limits": ["Model may underperform on new merchant categories"]
+  "shadow_rules_detected": [...],
+  "analyst_consistency": { "l1_inter_analyst_variance": 0.12 },
+  "accuracy_metrics": { "l1_vs_true_fraud": { "accuracy": 0.85 } }
 }`}
             className="w-full h-[400px] bg-transparent p-4 text-sm font-mono text-cyan-300 resize-none outline-none placeholder-slate-600"
             spellCheck={false}
@@ -163,34 +169,34 @@ export default function GlobalJsonInput({ onComplete }: { onComplete: () => void
             <h4 className="text-sm font-medium text-slate-300 mb-3">Parsed Preview</h4>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <PreviewCard 
-                label="Model Version" 
-                value={preview.model_version || 'N/A'} 
+                label="Analysis Version" 
+                value={preview.analysis_version || preview.model_version || 'N/A'} 
                 color="cyan"
               />
               <PreviewCard 
-                label="Features" 
-                value={preview.global_importance?.length || 0} 
+                label="Decision Factors" 
+                value={preview.l1_decision_factors?.length || preview.global_importance?.length || 0} 
                 color="emerald"
               />
               <PreviewCard 
-                label="Sample Size" 
-                value={preview.reliability?.sample_size?.toLocaleString() || 'N/A'} 
+                label="Total Alerts" 
+                value={preview.dataset_summary?.total_alerts?.toLocaleString() || preview.reliability?.sample_size?.toLocaleString() || 'N/A'} 
                 color="violet"
               />
               <PreviewCard 
-                label="Stability" 
-                value={preview.reliability?.stability_score || 'N/A'} 
+                label="Shadow Rules" 
+                value={preview.shadow_rules_detected?.length || 0} 
                 color="amber"
               />
             </div>
             
-            {preview.global_importance && preview.global_importance.length > 0 && (
+            {(preview.l1_decision_factors || preview.global_importance) && (preview.l1_decision_factors || preview.global_importance).length > 0 && (
               <div className="mt-4">
-                <h5 className="text-xs text-slate-500 uppercase tracking-wider mb-2">Top Features</h5>
+                <h5 className="text-xs text-slate-500 uppercase tracking-wider mb-2">Top L1 Decision Factors</h5>
                 <div className="space-y-2">
-                  {preview.global_importance.slice(0, 3).map((item: any, idx: number) => (
+                  {(preview.l1_decision_factors || preview.global_importance).slice(0, 3).map((item: any, idx: number) => (
                     <div key={idx} className="flex items-center gap-3">
-                      <span className="text-sm text-slate-300 w-40 truncate">{item.feature_or_group}</span>
+                      <span className="text-sm text-slate-300 w-40 truncate">{item.factor || item.feature_or_group}</span>
                       <div className="flex-1 h-2 bg-slate-800 rounded-full overflow-hidden">
                         <motion.div
                           initial={{ width: 0 }}

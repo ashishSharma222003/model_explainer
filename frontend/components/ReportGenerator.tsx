@@ -14,7 +14,10 @@ import {
   Code2,
   ClipboardList,
   History,
-  Clock
+  Clock,
+  Database,
+  UserSearch,
+  Shield
 } from 'lucide-react';
 import { AppContext } from '@/app/page';
 import { generateReport, ReportType, ReportFormat, GenerateReportResponse } from '@/lib/api';
@@ -30,6 +33,7 @@ export default function ReportGenerator({ isOpen, onClose }: ReportGeneratorProp
   const [reportType, setReportType] = useState<ReportType>('executive');
   const [format, setFormat] = useState<ReportFormat>('markdown');
   const [includeCode, setIncludeCode] = useState(false);
+  const [includeSchema, setIncludeSchema] = useState(true);  // Include data schema by default
   const [includeChatHistory, setIncludeChatHistory] = useState(true);
   const [includeJsonData, setIncludeJsonData] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -53,6 +57,7 @@ export default function ReportGenerator({ isOpen, onClose }: ReportGeneratorProp
         report_type: reportType,
         format,
         include_code: includeCode,
+        include_schema: includeSchema,
         include_chat_history: includeChatHistory,
         include_json_data: includeJsonData,
       });
@@ -100,26 +105,42 @@ export default function ReportGenerator({ isOpen, onClose }: ReportGeneratorProp
     navigator.clipboard.writeText(generatedReport.content);
   };
 
-  const reportTypes: { id: ReportType; label: string; description: string; icon: React.ReactNode }[] = [
+  // Check if txn chat has messages (required for shadow report)
+  const hasTxnChat = (context?.session.chatHistory?.txnChat?.length || 0) > 0;
+
+  const reportTypes: { id: ReportType; label: string; description: string; icon: React.ReactNode; requiresTxnChat?: boolean }[] = [
     { 
       id: 'executive', 
       label: 'Executive Summary', 
-      description: 'Non-technical overview for stakeholders',
+      description: 'Clear overview for management and stakeholders',
       icon: <Users className="w-5 h-5" />
+    },
+    { 
+      id: 'full_export', 
+      label: 'Operations Report', 
+      description: 'Complete findings and recommendations',
+      icon: <ClipboardList className="w-5 h-5" />
+    },
+    { 
+      id: 'shadow_report', 
+      label: 'Shadow Report', 
+      description: 'Hidden patterns, biases, and compliance gaps',
+      icon: <UserSearch className="w-5 h-5" />,
+      requiresTxnChat: true
     },
     { 
       id: 'technical', 
       label: 'Technical Report', 
-      description: 'Detailed analysis for data scientists',
+      description: 'Code and model details for developers',
       icon: <Code2 className="w-5 h-5" />
     },
-    { 
-      id: 'full_export', 
-      label: 'Full Export', 
-      description: 'Complete session with all details',
-      icon: <ClipboardList className="w-5 h-5" />
-    },
   ];
+
+  // Filter report types based on availability
+  const availableReportTypes = reportTypes.filter(type => {
+    if (type.requiresTxnChat && !hasTxnChat) return false;
+    return true;
+  });
 
   if (!isOpen) return null;
 
@@ -312,6 +333,11 @@ export default function ReportGenerator({ isOpen, onClose }: ReportGeneratorProp
                             <FileCode className="w-3 h-3" /> Code
                           </span>
                         )}
+                        {report.includeSchema && (
+                          <span className="text-xs bg-slate-800 text-slate-400 px-2 py-0.5 rounded flex items-center gap-1">
+                            <Database className="w-3 h-3" /> Schema
+                          </span>
+                        )}
                         {report.includeJsonData && (
                           <span className="text-xs bg-slate-800 text-slate-400 px-2 py-0.5 rounded flex items-center gap-1">
                             <FileJson className="w-3 h-3" /> JSON
@@ -335,7 +361,7 @@ export default function ReportGenerator({ isOpen, onClose }: ReportGeneratorProp
                 <div className="mb-6">
                   <h3 className="text-sm font-medium text-white mb-3">Report Type</h3>
                   <div className="grid grid-cols-1 gap-3">
-                    {reportTypes.map(type => (
+                    {availableReportTypes.map(type => (
                       <button
                         key={type.id}
                         onClick={() => setReportType(type.id)}
@@ -360,6 +386,18 @@ export default function ReportGenerator({ isOpen, onClose }: ReportGeneratorProp
                       </button>
                     ))}
                   </div>
+                  
+                  {/* Shadow Report note when not available */}
+                  {!hasTxnChat && (
+                    <div className="mt-3 p-3 bg-slate-900/30 border border-slate-800 rounded-lg">
+                      <div className="flex items-center gap-2 text-xs text-slate-500">
+                        <UserSearch className="w-4 h-4" />
+                        <span>
+                          <strong>Shadow Report</strong> will be available after you start analyzing transactions in Transaction Chat.
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Include Options */}
@@ -374,19 +412,34 @@ export default function ReportGenerator({ isOpen, onClose }: ReportGeneratorProp
                         className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-violet-500 focus:ring-violet-500"
                       />
                       <MessageSquare className="w-4 h-4 text-cyan-400" />
-                      <span className="text-sm text-slate-300">Chat History</span>
+                      <span className="text-sm text-slate-300">Analysis Conversations</span>
                     </label>
+                    
+                    {/* Only show code option for technical reports */}
+                    {reportType === 'technical' && (
+                      <label className="flex items-center gap-3 p-3 bg-slate-900/50 border border-slate-800 rounded-lg cursor-pointer hover:border-slate-700 transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={includeCode}
+                          onChange={e => setIncludeCode(e.target.checked)}
+                          className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-violet-500 focus:ring-violet-500"
+                        />
+                        <FileCode className="w-4 h-4 text-violet-400" />
+                        <span className="text-sm text-slate-300">ML Code</span>
+                        {!context?.mlCode && <span className="text-xs text-slate-500">(not provided)</span>}
+                      </label>
+                    )}
                     
                     <label className="flex items-center gap-3 p-3 bg-slate-900/50 border border-slate-800 rounded-lg cursor-pointer hover:border-slate-700 transition-colors">
                       <input
                         type="checkbox"
-                        checked={includeCode}
-                        onChange={e => setIncludeCode(e.target.checked)}
+                        checked={includeSchema}
+                        onChange={e => setIncludeSchema(e.target.checked)}
                         className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-violet-500 focus:ring-violet-500"
                       />
-                      <FileCode className="w-4 h-4 text-violet-400" />
-                      <span className="text-sm text-slate-300">ML Code</span>
-                      {!context?.mlCode && <span className="text-xs text-slate-500">(not provided)</span>}
+                      <Database className="w-4 h-4 text-emerald-400" />
+                      <span className="text-sm text-slate-300">Data Overview</span>
+                      {!context?.dataSchema && <span className="text-xs text-slate-500">(not provided)</span>}
                     </label>
                     
                     <label className="flex items-center gap-3 p-3 bg-slate-900/50 border border-slate-800 rounded-lg cursor-pointer hover:border-slate-700 transition-colors">
@@ -397,7 +450,7 @@ export default function ReportGenerator({ isOpen, onClose }: ReportGeneratorProp
                         className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-violet-500 focus:ring-violet-500"
                       />
                       <FileJson className="w-4 h-4 text-amber-400" />
-                      <span className="text-sm text-slate-300">JSON Data (Global/Transaction)</span>
+                      <span className="text-sm text-slate-300">Model Findings Details</span>
                     </label>
                   </div>
                 </div>

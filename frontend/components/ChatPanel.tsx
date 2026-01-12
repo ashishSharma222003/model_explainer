@@ -1,8 +1,8 @@
 "use client";
 import { useState, useRef, useEffect, useContext } from 'react';
 import { motion } from 'framer-motion';
-import { Send, MessageSquare, Sparkles, Plus, Code2, FileJson, Layers, Copy, Check, ArrowRight, Lightbulb, X, Info } from 'lucide-react';
-import { chat, ChatApiResponse } from '../lib/api';
+import { Send, MessageSquare, Sparkles, Plus, Code2, FileJson, Layers, Copy, Check, ArrowRight, Lightbulb, X, Info, Database, Filter } from 'lucide-react';
+import { chat, chatTxn, ChatApiResponse, TxnChatApiResponse } from '../lib/api';
 import { AppContext, ChatMessage } from '@/app/page';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -65,35 +65,98 @@ export default function ChatPanel({ mode, onAddTxn, kernelOutput, onKernelOutput
     setLoading(true);
 
     try {
-      const res: ChatApiResponse = await chat({
-        session_id: sessionId,
-        message: userMessage,
-        context: {
-          ml_code: context?.mlCode,
-          global: context?.globalJson,
-          txn: mode === 'txn' ? context?.txnJson : null,
-        }
-      });
-      
-      const aiResponse = res.response;
-      setMessages([...newMessages, { 
-        type: 'ai', 
-        content: aiResponse,
-        context: contextSnapshot // AI response uses same context as the question
-      }]);
-      
-      // Check if AI provided a suggestion for improving global JSON function
-      if (res.global_json_suggestion) {
-        setCurrentSuggestion(res.global_json_suggestion);
-        setShowSuggestionBanner(true);
-        
-        // Also add to context suggestions
-        context?.addSuggestion({
-          type: 'update_explain_global',
-          title: 'Update explain_global() function',
-          description: res.global_json_suggestion,
-          fromStep: mode === 'global' ? 'global-chat' : 'txn-chat',
+      const chatContext = {
+        ml_code: context?.mlCode,
+        data_schema: context?.dataSchema,
+        global: context?.globalJson,
+        txn: mode === 'txn' ? context?.txnJson : null,
+        // Include guidelines for transaction analysis
+        guidelines: mode === 'txn' ? context?.session.guidelines : null,
+        // Include analyst decision history for shadow rule detection
+        analyst_decisions_history: mode === 'txn' ? context?.session.analystDecisions : null,
+      };
+
+      if (mode === 'txn') {
+        // Use transaction-specific chat API
+        const res: TxnChatApiResponse = await chatTxn({
+          session_id: sessionId,
+          message: userMessage,
+          context: chatContext
         });
+        
+        // Build response with additional insights
+        let fullResponse = res.response;
+        
+        // Append guideline reference if provided
+        if (res.guideline_reference) {
+          fullResponse += `\n\n📋 **Guideline:** ${res.guideline_reference}`;
+        }
+        
+        // Append shadow rule detection if found
+        if (res.shadow_rule_detected) {
+          fullResponse += `\n\n🔍 **Shadow Rule Detected:** ${res.shadow_rule_detected}`;
+        }
+        
+        // Append what-if insight if provided
+        if (res.what_if_insight) {
+          fullResponse += `\n\n💡 **What-If Insight:** ${res.what_if_insight}`;
+        }
+        
+        // Append risk flag if provided
+        if (res.risk_flag) {
+          fullResponse += `\n\n⚠️ **Risk Note:** ${res.risk_flag}`;
+        }
+        
+        // Append compliance note if provided
+        if (res.compliance_note) {
+          fullResponse += `\n\n⚖️ **Compliance:** ${res.compliance_note}`;
+        }
+        
+        setMessages([...newMessages, { 
+          type: 'ai', 
+          content: fullResponse,
+          context: contextSnapshot
+        }]);
+        
+        // Check if AI provided a suggestion for improving txn JSON function
+        if (res.txn_json_suggestion) {
+          setCurrentSuggestion(res.txn_json_suggestion);
+          setShowSuggestionBanner(true);
+          
+          context?.addSuggestion({
+            type: 'update_explain_txn',
+            title: 'Update explain_txn() function',
+            description: res.txn_json_suggestion,
+            fromStep: 'txn-chat',
+          });
+        }
+      } else {
+        // Use global chat API
+        const res: ChatApiResponse = await chat({
+          session_id: sessionId,
+          message: userMessage,
+          context: chatContext
+        });
+        
+        const aiResponse = res.response;
+        setMessages([...newMessages, { 
+          type: 'ai', 
+          content: aiResponse,
+          context: contextSnapshot
+        }]);
+        
+        // Check if AI provided a suggestion for improving global JSON function
+        if (res.global_json_suggestion) {
+          setCurrentSuggestion(res.global_json_suggestion);
+          setShowSuggestionBanner(true);
+          
+          context?.addSuggestion({
+            type: 'update_explain_global',
+            title: 'Update explain_global() function',
+            description: res.global_json_suggestion,
+            fromStep: 'global-chat',
+          });
+        }
       }
     } catch (e) {
       setMessages([...newMessages, { 
@@ -127,10 +190,12 @@ export default function ChatPanel({ mode, onAddTxn, kernelOutput, onKernelOutput
     "Explain the feature importance rankings",
     "What are the model's limitations?",
   ] : [
-    "Why did the model make this prediction?",
-    "Which features contributed most to this decision?",
-    "Is this prediction reliable?",
-    "What would change the prediction?",
+    "What patterns do you see in these analyst decisions?",
+    "Are there any shadow rules in how analysts made decisions?",
+    "Which cases show potential bias in analyst decisions?",
+    "Why did analysts override the model in these cases?",
+    "What factors influenced L1 vs L2 decision differences?",
+    "Are there any guideline violations in these decisions?",
   ];
 
   return (
@@ -153,6 +218,16 @@ export default function ChatPanel({ mode, onAddTxn, kernelOutput, onKernelOutput
             />
             
             <ContextItem
+              icon={<Database className="w-4 h-4" />}
+              label="Data Schema"
+              status={context?.dataSchema ? 'active' : 'optional'}
+              detail={context?.dataSchema 
+                ? `${context.dataSchema.features?.length || context.dataSchema.dataset_info?.total_features || 0} features` 
+                : 'Optional'}
+              color="emerald"
+            />
+            
+            <ContextItem
               icon={<FileJson className="w-4 h-4" />}
               label="Global JSON"
               status={context?.globalJson ? 'active' : 'missing'}
@@ -162,9 +237,13 @@ export default function ChatPanel({ mode, onAddTxn, kernelOutput, onKernelOutput
             
             <ContextItem
               icon={<FileJson className="w-4 h-4" />}
-              label="Transaction JSON"
-              status={context?.txnJson ? 'active' : (mode === 'txn' ? 'required' : 'optional')}
-              detail={context?.txnJson?.txn_id || (mode === 'txn' ? 'Required' : 'Optional')}
+              label="Selected Cases"
+              status={context?.txnJson?.selectedCases?.length > 0 ? 'active' : (mode === 'txn' ? 'required' : 'optional')}
+              detail={
+                context?.txnJson?.selectedCases?.length > 0 
+                  ? `${context?.txnJson?.totalCases || context?.txnJson?.selectedCases?.length || 0} case${(context?.txnJson?.selectedCases?.length || 0) > 1 ? 's' : ''} selected`
+                  : (mode === 'txn' ? 'Select cases first' : 'Optional')
+              }
               color="amber"
             />
           </div>
@@ -176,8 +255,28 @@ export default function ChatPanel({ mode, onAddTxn, kernelOutput, onKernelOutput
             className="w-full p-4 bg-gradient-to-r from-amber-500/10 to-orange-500/10 hover:from-amber-500/20 hover:to-orange-500/20 border border-amber-500/30 rounded-xl text-amber-300 text-sm font-medium flex items-center justify-center gap-2 transition-all"
           >
             <Plus className="w-4 h-4" />
-            Add Transaction JSON
+            Select Cases to Analyze
           </button>
+        )}
+
+        {/* Show active filters in txn mode */}
+        {mode === 'txn' && (context?.txnJson?.filters?.length || 0) > 0 && (
+          <div className="bg-[#0d1117] border border-amber-500/30 rounded-xl p-4">
+            <h3 className="text-sm font-semibold text-amber-300 mb-3 flex items-center gap-2">
+              <Filter className="w-4 h-4" />
+              Active Filters
+            </h3>
+            <div className="space-y-2">
+              {(context?.txnJson?.filters || []).map((f: any, i: number) => (
+                <div key={i} className="text-xs bg-amber-500/10 border border-amber-500/20 rounded-lg px-2 py-1.5 text-amber-200">
+                  <span className="font-mono">{f.label || `${f.column} ${f.operator} ${f.value}`}</span>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 pt-3 border-t border-slate-800 text-xs text-slate-500">
+              {context?.txnJson?.totalCases || context?.txnJson?.selectedCases?.length || 0} cases match these filters
+            </div>
+          </div>
         )}
 
         <div className="bg-[#0d1117] border border-slate-800 rounded-xl p-4">
@@ -219,12 +318,12 @@ export default function ChatPanel({ mode, onAddTxn, kernelOutput, onKernelOutput
             </div>
             <div>
               <h2 className="text-lg font-semibold text-white">
-                {mode === 'global' ? 'Explore Global Model Behavior' : 'Analyze Transaction Prediction'}
+                {mode === 'global' ? 'Explore Global Model Behavior' : 'Analyze Analyst Decisions'}
               </h2>
               <p className="text-xs text-slate-500">
                 {mode === 'global' 
                   ? 'Ask about feature importance, model behavior, and potential issues'
-                  : 'Understand why the model made this specific prediction'}
+                  : `Uncover shadow rules and decision patterns${context?.txnJson?.totalCases ? ` (${context.txnJson.totalCases} cases selected)` : ''}`}
               </p>
             </div>
           </div>
@@ -334,15 +433,27 @@ export default function ChatPanel({ mode, onAddTxn, kernelOutput, onKernelOutput
                 <MessageSquare className="w-10 h-10 text-cyan-400" />
               </div>
               <h3 className="text-xl font-semibold text-white mb-2">
-                {mode === 'global' ? 'Ready to Explore' : 'Analyze This Prediction'}
+                {mode === 'global' ? 'Ready to Explore' : 'Analyze Selected Cases'}
               </h3>
               <p className="text-slate-400 text-sm max-w-md mb-6">
                 {mode === 'global'
                   ? "I have your ML code and Global JSON loaded. Ask me anything about how your model works, feature importance, or potential issues."
-                  : "I can explain why this prediction was made, which features contributed most, and whether it's reliable."}
+                  : (context?.txnJson?.selectedCases?.length || 0) > 0
+                    ? `I have ${context?.txnJson?.totalCases || context?.txnJson?.selectedCases?.length || 0} case(s) loaded. Ask me about analyst decision patterns, shadow rules, biases, and guideline compliance.`
+                    : "Select cases from the previous step to analyze analyst decisions and uncover shadow rules."}
               </p>
+              {/* Show active filters summary */}
+              {mode === 'txn' && (context?.txnJson?.filters?.length || 0) > 0 && (
+                <div className="flex flex-wrap justify-center gap-2 mb-4">
+                  {(context?.txnJson?.filters || []).map((f: any, i: number) => (
+                    <span key={i} className="px-2 py-1 bg-amber-500/20 border border-amber-500/30 rounded-lg text-xs text-amber-300">
+                      {f.label}
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="flex flex-wrap justify-center gap-2">
-                {suggestedQuestions.slice(0, 2).map((q, i) => (
+                {suggestedQuestions.slice(0, 3).map((q, i) => (
                   <button
                     key={i}
                     onClick={() => setInput(q)}
@@ -360,7 +471,8 @@ export default function ChatPanel({ mode, onAddTxn, kernelOutput, onKernelOutput
             const prevUserMsg = messages.slice(0, i).reverse().find(msg => msg.type === 'user');
             const contextChanged = m.type === 'user' && prevUserMsg?.context && m.context && (
               prevUserMsg.context.globalJsonVersion !== m.context.globalJsonVersion ||
-              prevUserMsg.context.txnId !== m.context.txnId
+              prevUserMsg.context.selectedCasesCount !== m.context.selectedCasesCount ||
+              JSON.stringify(prevUserMsg.context.activeFilters) !== JSON.stringify(m.context.activeFilters)
             );
             
             return (
@@ -378,8 +490,11 @@ export default function ChatPanel({ mode, onAddTxn, kernelOutput, onKernelOutput
                     Context updated: {m.context?.globalJsonVersion !== prevUserMsg?.context?.globalJsonVersion && (
                       <span>Global JSON → v{m.context?.globalJsonVersion || 'new'}</span>
                     )}
-                    {m.context?.txnId !== prevUserMsg?.context?.txnId && m.context?.txnId && (
-                      <span> Txn: {m.context.txnId}</span>
+                    {m.context?.selectedCasesCount !== prevUserMsg?.context?.selectedCasesCount && m.context?.selectedCasesCount && (
+                      <span> Cases: {m.context.selectedCasesCount} selected</span>
+                    )}
+                    {JSON.stringify(m.context?.activeFilters) !== JSON.stringify(prevUserMsg?.context?.activeFilters) && m.context?.activeFilters?.length && (
+                      <span> Filters: {m.context.activeFilters.length} active</span>
                     )}
                   </span>
                 </div>
@@ -393,17 +508,23 @@ export default function ChatPanel({ mode, onAddTxn, kernelOutput, onKernelOutput
                 {/* Context badge for user messages */}
                 {m.type === 'user' && m.context && (
                   <div className="flex items-center gap-2 mb-2 pb-2 border-b border-white/20">
-                    <div className="flex items-center gap-1.5 text-xs text-cyan-100/80">
+                    <div className="flex items-center gap-1.5 text-xs text-cyan-100/80 flex-wrap">
                       {m.context.globalJsonVersion && (
                         <span className="flex items-center gap-1 bg-white/10 px-1.5 py-0.5 rounded">
                           <FileJson className="w-3 h-3" />
                           v{m.context.globalJsonVersion}
                         </span>
                       )}
-                      {m.context.txnId && (
-                        <span className="flex items-center gap-1 bg-white/10 px-1.5 py-0.5 rounded">
+                      {m.context.selectedCasesCount && m.context.selectedCasesCount > 0 && (
+                        <span className="flex items-center gap-1 bg-amber-500/20 px-1.5 py-0.5 rounded text-amber-200">
                           <Layers className="w-3 h-3" />
-                          {m.context.txnId}
+                          {m.context.selectedCasesCount} case{m.context.selectedCasesCount > 1 ? 's' : ''}
+                        </span>
+                      )}
+                      {m.context.activeFilters && m.context.activeFilters.length > 0 && (
+                        <span className="flex items-center gap-1 bg-violet-500/20 px-1.5 py-0.5 rounded text-violet-200">
+                          <Filter className="w-3 h-3" />
+                          {m.context.activeFilters.length} filter{m.context.activeFilters.length > 1 ? 's' : ''}
                         </span>
                       )}
                       {m.context.hasCode && (
@@ -584,6 +705,7 @@ function ContextItem({
 
   const iconColors: Record<string, string> = {
     violet: 'text-violet-400',
+    emerald: 'text-emerald-400',
     cyan: 'text-cyan-400',
     amber: 'text-amber-400',
   };

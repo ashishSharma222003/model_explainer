@@ -25,6 +25,16 @@ export interface ChatApiResponse {
   global_json_suggestion: string | null;
 }
 
+export interface TxnChatApiResponse {
+  response: string;
+  txn_json_suggestion: string | null;
+  what_if_insight: string | null;
+  risk_flag: string | null;
+  shadow_rule_detected: string | null;
+  guideline_reference: string | null;
+  compliance_note: string | null;
+}
+
 export async function chat(request: { session_id: string; message: string; context?: any }): Promise<ChatApiResponse> {
   const res = await fetch(`${API_URL}/chat`, {
     method: 'POST',
@@ -35,11 +45,21 @@ export async function chat(request: { session_id: string; message: string; conte
   return res.json();
 }
 
-export async function guideCode(session_id: string, code: string) {
+export async function chatTxn(request: { session_id: string; message: string; context?: any }): Promise<TxnChatApiResponse> {
+  const res = await fetch(`${API_URL}/chat-txn`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  if (!res.ok) throw new Error('Failed to send transaction chat message');
+  return res.json();
+}
+
+export async function guideCode(session_id: string, code: string, data_schema?: string) {
   const res = await fetch(`${API_URL}/guide-code`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id, code }),
+    body: JSON.stringify({ session_id, code, data_schema }),
   });
   if (!res.ok) throw new Error('Failed to get code guidance');
   return res.json();
@@ -102,6 +122,10 @@ export interface FullSession {
   createdAt: string;
   updatedAt: string;
   mlCode: string;
+  dataSchema: any;
+  csvFileName: string;
+  hasCsvData: boolean;
+  csvRowCount: number;
   globalJson: any;
   txnJson: any;
   chatHistory: {
@@ -111,6 +135,42 @@ export interface FullSession {
   };
   suggestions?: CodeSuggestionApi[];
   step?: string;
+}
+
+// ============ CSV Data API ============
+
+export interface CsvDataResponse {
+  fileName: string;
+  rowCount: number;
+  data: Record<string, any>[];
+}
+
+export async function uploadCsvData(sessionId: string, csvData: Record<string, any>[], fileName: string): Promise<{ success: boolean; rowCount: number }> {
+  const res = await fetch(`${API_URL}/sessions/${sessionId}/csv`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ csv_data: csvData, file_name: fileName }),
+  });
+  if (!res.ok) throw new Error('Failed to upload CSV data');
+  return res.json();
+}
+
+export async function getCsvData(sessionId: string): Promise<CsvDataResponse> {
+  const res = await fetch(`${API_URL}/sessions/${sessionId}/csv`);
+  if (!res.ok) throw new Error('Failed to get CSV data');
+  return res.json();
+}
+
+export async function getCsvRow(sessionId: string, rowIndex: number): Promise<{ row: Record<string, any>; index: number }> {
+  const res = await fetch(`${API_URL}/sessions/${sessionId}/csv/row/${rowIndex}`);
+  if (!res.ok) throw new Error('Failed to get CSV row');
+  return res.json();
+}
+
+export async function searchCsvData(sessionId: string, column: string, value: string): Promise<{ rows: Record<string, any>[]; count: number }> {
+  const res = await fetch(`${API_URL}/sessions/${sessionId}/csv/search?column=${encodeURIComponent(column)}&value=${encodeURIComponent(value)}`);
+  if (!res.ok) throw new Error('Failed to search CSV data');
+  return res.json();
 }
 
 export async function getAllSessionsFromBackend(): Promise<{ sessions: FullSession[]; count: number }> {
@@ -178,7 +238,7 @@ export async function deleteSessionFromBackend(sessionId: string): Promise<boole
 
 // ============ Report Generation API ============
 
-export type ReportType = 'executive' | 'technical' | 'full_export';
+export type ReportType = 'executive' | 'technical' | 'full_export' | 'shadow_report';
 export type ReportFormat = 'markdown' | 'json';
 
 export interface ReportRequest {
@@ -186,6 +246,7 @@ export interface ReportRequest {
   report_type: ReportType;
   format: ReportFormat;
   include_code: boolean;
+  include_schema: boolean;
   include_chat_history: boolean;
   include_json_data: boolean;
 }
@@ -205,6 +266,7 @@ export interface ReportRecord {
   title: string;
   generatedAt: string;
   includeCode: boolean;
+  includeSchema: boolean;
   includeChatHistory: boolean;
   includeJsonData: boolean;
   filename: string;

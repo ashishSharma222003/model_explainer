@@ -40,3 +40,4 @@ __pycache__/
 # Backend data files (keep templates, ignore user data)
 backend/chat_memory.json
 backend/user_sessions.json
+backend/session_csv_data/
