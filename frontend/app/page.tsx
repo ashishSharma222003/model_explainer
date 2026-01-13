@@ -1,14 +1,11 @@
 "use client";
 import { useState, createContext, useContext, useEffect, useCallback, useRef } from 'react';
-import { Layers, ChevronRight, Check, FileText, Terminal, User, Code2, BookOpen } from 'lucide-react';
-import CodeAnalyzer from '@/components/CodeAnalyzer';
+import { Layers, ChevronRight, Check, FileText, Terminal, User, Code2, BookOpen, BarChart3, MessageSquare } from 'lucide-react';
 import DataSchemaInput from '@/components/DataSchemaInput';
-import GlobalJsonInput from '@/components/GlobalJsonInput';
+import ResultsDashboard from '@/components/ResultsDashboard';
 import ChatPanel from '@/components/ChatPanel';
-import TxnJsonInput from '@/components/TxnJsonInput';
 import SessionPicker from '@/components/SessionPicker';
 import ReportGenerator from '@/components/ReportGenerator';
-import DeveloperPanel from '@/components/DeveloperPanel';
 import GuidelinesInput from '@/components/GuidelinesInput';
 import { 
   Session, 
@@ -67,35 +64,28 @@ interface AppContextType {
 
 export const AppContext = createContext<AppContextType | null>(null);
 
-type Step = 'data-schema' | 'code' | 'global-json' | 'global-chat' | 'txn-json' | 'txn-chat';
+type Step = 'data' | 'results' | 'chat';
 
-const STEPS: { id: Step; label: string }[] = [
-  { id: 'data-schema', label: 'Data' },
-  { id: 'code', label: 'Code' },
-  { id: 'global-json', label: 'Patterns' },
-  { id: 'global-chat', label: 'Explore' },
-  { id: 'txn-json', label: 'Cases' },
-  { id: 'txn-chat', label: 'Review' },
+const STEPS: { id: Step; label: string; icon: any }[] = [
+  { id: 'data', label: 'Data', icon: FileText },
+  { id: 'results', label: 'Results', icon: BarChart3 },
+  { id: 'chat', label: 'Chat', icon: MessageSquare },
 ];
 
 function getStepFromSession(session: Session): Step {
-  if (session.txnJson) return 'txn-chat';
-  if (session.globalJson) return 'global-chat';
-  if (session.mlCode) return 'global-json';
-  if (session.dataSchema) return 'code';
-  return 'data-schema';
+  if (session.analysisResult) return 'results';
+  if (session.dataSchema || session.hasCsvData) return 'results';
+  return 'data';
 }
 
 export default function Home() {
-  const [currentStep, setCurrentStep] = useState<Step>('code');
+  const [currentStep, setCurrentStep] = useState<Step>('data');
   const [session, setSession] = useState<Session>(() => createNewSession());
   const [allSessions, setAllSessions] = useState<Session[]>([]);
   const [isHydrated, setIsHydrated] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [showReportGenerator, setShowReportGenerator] = useState(false);
   const [showGuidelines, setShowGuidelines] = useState(false);
-  const [developerMode, setDeveloperMode] = useState(false);
-  const [kernelOutputToChat, setKernelOutputToChat] = useState<string | null>(null);
   
   const shouldSave = useRef(false);
   
@@ -180,7 +170,7 @@ export default function Home() {
     const newSession = createNewSession();
     setSession(newSession);
     setCurrentSessionId(newSession.id);
-    setCurrentStep('code');
+    setCurrentStep('data');
     // New sessions start with empty suggestions (already in createNewSession)
     saveSession(newSession);
     setAllSessions(getAllSessions());
@@ -309,12 +299,9 @@ export default function Home() {
   const canNavigateTo = (step: Step) => {
     const stepIndex = STEPS.findIndex(s => s.id === step);
     if (stepIndex < currentStepIndex) return true;
-    if (step === 'data-schema') return true;  // First step, always accessible
-    if (step === 'code') return session.dataSchema !== null;  // Requires data first
-    if (step === 'global-json') return session.dataSchema !== null && session.mlCode.length > 0;
-    if (step === 'global-chat') return session.globalJson !== null;
-    if (step === 'txn-json') return session.globalJson !== null;
-    if (step === 'txn-chat') return session.txnJson !== null;
+    if (step === 'data') return true;  // First step, always accessible
+    if (step === 'results') return session.hasCsvData;  // Requires data first
+    if (step === 'chat') return session.analysisResult !== undefined;  // Requires analysis
     return false;
   };
 
@@ -382,32 +369,6 @@ export default function Home() {
                 </div>
               )}
 
-              {/* Mode Toggle */}
-              <div className="flex items-center bg-slate-800/50 rounded-lg border border-slate-700/50 p-0.5">
-                <button
-                  onClick={() => setDeveloperMode(false)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
-                    !developerMode 
-                      ? 'bg-slate-700 text-white' 
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <User className="w-3.5 h-3.5" />
-                  Standard
-                </button>
-                <button
-                  onClick={() => setDeveloperMode(true)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
-                    developerMode 
-                      ? 'bg-emerald-600 text-white' 
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <Terminal className="w-3.5 h-3.5" />
-                  Developer
-                </button>
-              </div>
-
               {/* Guidelines Button */}
               <button
                 onClick={() => setShowGuidelines(true)}
@@ -454,7 +415,7 @@ export default function Home() {
                 const isActive = step.id === currentStep;
                 const isCompleted = idx < currentStepIndex;
                 const isClickable = canNavigateTo(step.id);
-                const hasSuggestions = suggestions.filter(s => !s.dismissed && s.fromStep === step.id).length > 0;
+                const StepIcon = step.icon;
 
                 return (
                   <div key={step.id} className="flex items-center">
@@ -471,10 +432,6 @@ export default function Home() {
                           : 'bg-slate-900/30 border border-slate-800/30 text-slate-500 opacity-50 cursor-not-allowed'
                       }`}
                     >
-                      {/* Suggestion indicator */}
-                      {hasSuggestions && step.id === 'code' && (
-                        <div className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-500 rounded-full animate-pulse" />
-                      )}
                       <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${
                         isActive
                           ? 'bg-cyan-500 text-white'
@@ -496,52 +453,25 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Main Content - with side panel space when developer mode is on */}
-        <div className={`transition-all duration-300 ${
-          developerMode && (currentStep === 'global-chat' || currentStep === 'txn-chat')
-            ? 'mr-[420px]' // Make room for the developer panel
-            : ''
-        }`}>
-          <div className="max-w-7xl mx-auto px-6 py-8">
-            {currentStep === 'code' && (
-              <CodeAnalyzer onComplete={() => handleNextStep()} />
-            )}
-            {currentStep === 'data-schema' && (
-              <DataSchemaInput onComplete={() => handleNextStep()} />
-            )}
-            {currentStep === 'global-json' && (
-              <GlobalJsonInput onComplete={() => handleNextStep()} />
-            )}
-            {currentStep === 'global-chat' && (
-              <ChatPanel 
-                mode="global"
-                onAddTxn={() => setCurrentStep('txn-json')}
-                kernelOutput={kernelOutputToChat}
-                onKernelOutputUsed={() => setKernelOutputToChat(null)}
-              />
-            )}
-            {currentStep === 'txn-json' && (
-              <TxnJsonInput onComplete={() => handleNextStep()} />
-            )}
-            {currentStep === 'txn-chat' && (
-              <ChatPanel 
-                mode="txn" 
-                kernelOutput={kernelOutputToChat}
-                onKernelOutputUsed={() => setKernelOutputToChat(null)}
-              />
-            )}
-          </div>
+        {/* Main Content */}
+        <div className="max-w-7xl mx-auto px-6 py-8">
+          {currentStep === 'data' && (
+            <DataSchemaInput onComplete={() => handleNextStep()} />
+          )}
+          {currentStep === 'results' && (
+            <ResultsDashboard 
+              onChatWithCase={(cases) => {
+                updateSession({ selectedWrongPredictions: cases });
+                setCurrentStep('chat');
+              }} 
+            />
+          )}
+          {currentStep === 'chat' && (
+            <ChatPanel 
+              mode="txn"
+            />
+          )}
         </div>
-
-        {/* Developer Panel - Fixed Side Panel */}
-        {developerMode && (currentStep === 'global-chat' || currentStep === 'txn-chat') && (
-          <DeveloperPanel 
-            isVisible={true}
-            onSendToChat={(output) => {
-              setKernelOutputToChat(output);
-            }}
-          />
-        )}
 
         {/* Report Generator Modal */}
         <ReportGenerator 

@@ -682,7 +682,6 @@ export default function ChatPanel({ mode, onAddTxn, kernelOutput, onKernelOutput
     </div>
   );
 }
-
 function ContextItem({ 
   icon, 
   label, 
@@ -720,3 +719,4 @@ function ContextItem({
     </div>
   );
 }
+

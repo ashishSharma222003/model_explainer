@@ -600,82 +600,75 @@ Format suggestions as brief, specific code improvements."""
         context: Dict[str, Any] = None
     ) -> TxnChatResponse:
         """
-        Transaction-focused chat method.
-        Provides specialized prompting for discussing individual predictions,
-        local contributions, what-if scenarios, and analyst behavior analysis.
+        Chat method for analyzing wrong predictions (false positives/negatives).
+        Uses XGBoost SHAP analysis to understand why analyst decisions were wrong.
         
-        This method is designed for banking fraud detection workflows where:
-        1. ML Model flags transactions as potentially fraudulent
-        2. Human analysts review flagged transactions
-        3. Analysts make final decisions (confirm fraud, false positive, escalate)
-        
-        The goal is to understand both model predictions AND human analyst behavior,
-        including detecting "shadow rules" (undocumented patterns in analyst decisions).
+        Context includes:
+        - wrong_predictions: List of false positives and false negatives
+        - importance_summary: Feature importance from Random Forest analysis
+        - l1_analysis/l2_analysis: XGBoost analysis results
+        - prediction_breakdown: TP/FP/TN/FN counts
         """
         history = self.get_session_history(session_id)
         
-        system_content = """You are an expert in ML Explainability and Human-in-the-Loop Fraud Analysis for banking systems.
+        system_content = """You are an expert in ML Explainability and Fraud Analysis for banking systems.
 
 YOUR ROLE:
-Analyze SELECTED CASES to understand L1 and L2 analyst decision-making patterns.
-Detect "shadow rules" (undocumented patterns), biases, and inconsistencies in analyst behavior.
-Compare analyst decisions against official guidelines and true fraud outcomes.
+Analyze WRONG PREDICTIONS (false positives and false negatives) to understand why L1/L2 analysts made incorrect decisions.
+Use the XGBoost SHAP analysis to explain which features influenced incorrect decisions.
+Provide actionable insights for improving analyst training and decision-making.
 
 CONTEXT AVAILABLE:
-1. 'txn': SELECTED CASES - A set of filtered transactions with analyst decisions
-   - May include filters like "L1 Override", "False Positives", "High Value", etc.
-   - Each case includes L1 decision, L2 decision, model score, and true fraud outcome
-2. 'global': Global patterns from analyst decision modeling
-3. 'data_schema': Feature definitions and column meanings
-4. 'guidelines': Bank's official policies and regulatory requirements
-5. 'ml_code': Analysis code for understanding decision patterns
+1. 'wrong_predictions': Cases where analyst decisions did not match the true fraud outcome
+   - False Positives (FP): Analyst flagged as fraud, but was actually legitimate
+   - False Negatives (FN): Analyst cleared as legitimate, but was actually fraud
+2. 'importance_summary': Feature importance showing which features most influence decisions
+3. 'l1_analysis': XGBoost model analysis of L1 analyst decisions
+4. 'l2_analysis': XGBoost model analysis of L2 analyst decisions  
+5. 'prediction_breakdown': Overall accuracy metrics (TP, FP, TN, FN counts)
+6. 'data_schema': Feature definitions and column meanings
+7. 'guidelines': Bank's official policies and regulatory requirements
 
-YOUR APPROACH FOR ANALYZING SELECTED CASES:
+YOUR APPROACH FOR ANALYZING WRONG PREDICTIONS:
 
-1. **PATTERN DETECTION ACROSS CASES**:
-   - What common patterns do you see in the selected cases?
-   - Are there consistent factors driving analyst decisions?
-   - How do L1 and L2 decisions differ across these cases?
+1. **UNDERSTAND THE ERROR TYPE**:
+   - For False Positives: Why did the analyst think this was fraud when it wasn't?
+     - What features led them astray?
+     - Were they being too cautious? Following a shadow rule?
+   - For False Negatives: Why did the analyst clear this when it was actually fraud?
+     - What features made the fraud look legitimate?
+     - Did they miss key warning signs?
 
-2. **SHADOW RULE IDENTIFICATION**:
-   - Look for undocumented decision patterns not in official guidelines
-   - Examples: "Analysts always approve VIP customers", "Night transactions get extra scrutiny"
-   - Identify when analysts systematically override model predictions
-   - Surface patterns that management should review
+2. **USE SHAP INSIGHTS**:
+   - Reference the top SHAP features when explaining decisions
+   - Explain how feature values in the wrong cases differed from typical patterns
+   - Show which features the XGBoost model found most predictive
 
-3. **BIAS DETECTION**:
-   - Geographic bias: Do analysts treat regions differently?
-   - Amount bias: Are high/low amounts treated differently than guidelines suggest?
-   - Time bias: Are decisions different for night vs day transactions?
-   - Analyst-specific bias: Do certain analysts show consistent patterns?
+3. **IDENTIFY PATTERNS IN ERRORS**:
+   - Are there common characteristics in the wrong predictions?
+   - Do certain features consistently lead to errors?
+   - Are L1 or L2 analysts making more of certain error types?
 
-4. **ACCURACY ANALYSIS**:
-   - Compare analyst decisions to true_fraud_flag
-   - Calculate false positive and false negative rates
-   - Identify which types of cases analysts get right/wrong
-   - Compare L1 vs L2 accuracy
+4. **ROOT CAUSE ANALYSIS**:
+   - Was the error due to: Training gap? Guideline ambiguity? Edge case? Time pressure?
+   - Could the analyst have caught this with better information?
+   - Are there systemic issues causing these errors?
 
-5. **GUIDELINE COMPLIANCE**:
-   - Are analysts following documented guidelines?
-   - Which guidelines are most often violated?
-   - Are there cases where guideline violations led to correct decisions?
-
-6. **WHAT-IF SCENARIOS**:
-   - What would happen if analysts followed a different pattern?
-   - Which shadow rules, if changed, would improve accuracy?
+5. **RECOMMENDATIONS**:
+   - What training would help prevent these errors?
+   - Should guidelines be updated?
+   - Are there process improvements to suggest?
 
 WHEN PROVIDING INSIGHTS:
-- shadow_rule_detected: Describe any shadow rule pattern found
-- guideline_reference: Which official guideline is relevant
-- what_if_insight: Actionable scenario analysis
-- risk_flag: Concerns about bias or compliance
-- compliance_note: Regulatory or policy considerations
+- shadow_rule_detected: If the error stems from an undocumented pattern
+- what_if_insight: "If the analyst had noticed X, they would have caught this"
+- risk_flag: Concerns about the error (e.g., "This FN was a high-value fraud")
 
 BE SPECIFIC:
-- Reference actual column names and values from the cases
-- Cite specific guidelines when relevant
-- Quantify patterns (e.g., "In 8 of 10 selected cases, L1 overrode the model")
-- Provide concrete examples from the selected cases"""
+- Reference actual values from the wrong prediction cases
+- Quote SHAP feature importance when explaining feature effects
+- Quantify patterns when possible
+- Provide concrete, actionable recommendations"""
 
         messages = [SystemMessage(content=system_content)]
         
@@ -683,68 +676,68 @@ BE SPECIFIC:
         if context:
             context_parts = []
             
-            # Selected cases is the primary context (new format)
-            if context.get('txn'):
-                txn_context = context['txn']
-                
-                # Check if it's the new selectedCases format
-                if 'selectedCases' in txn_context:
-                    selected_cases = txn_context.get('selectedCases', [])
-                    filters = txn_context.get('filters', [])
-                    total_cases = txn_context.get('totalCases', len(selected_cases))
+            # Wrong predictions is the primary context (from XGBoost analysis)
+            if context.get('wrong_predictions'):
+                wrong_preds = context['wrong_predictions']
+                if isinstance(wrong_preds, list) and len(wrong_preds) > 0:
+                    fp_cases = [p for p in wrong_preds if p.get('case_type') == 'false_positive']
+                    fn_cases = [p for p in wrong_preds if p.get('case_type') == 'false_negative']
                     
-                    # Build cases summary
-                    context_parts.append(f"=== SELECTED CASES ({total_cases} cases) ===")
-                    
-                    # Show applied filters
-                    if filters:
-                        filter_labels = [f.get('label', f"{f.get('column')} {f.get('operator')} {f.get('value')}") for f in filters]
-                        context_parts.append(f"Applied Filters: {', '.join(filter_labels)}")
+                    context_parts.append(f"=== WRONG PREDICTIONS ({len(wrong_preds)} cases) ===")
+                    context_parts.append(f"False Positives: {len(fp_cases)} | False Negatives: {len(fn_cases)}")
                     
                     # Include case data (limit to first 10 for token efficiency)
-                    cases_to_show = selected_cases[:10]
-                    context_parts.append(f"\nCase Details (showing {len(cases_to_show)} of {total_cases}):")
+                    cases_to_show = wrong_preds[:10]
+                    context_parts.append(f"\nCase Details (showing {len(cases_to_show)} of {len(wrong_preds)}):")
                     context_parts.append(json.dumps(cases_to_show, indent=2))
                     
-                    if len(selected_cases) > 10:
-                        context_parts.append(f"\n... and {len(selected_cases) - 10} more cases")
-                else:
-                    # Legacy format - single transaction
-                    txn_data = json.dumps(txn_context, indent=2)
-                    context_parts.append(f"=== THIS TRANSACTION ===\n{txn_data}")
+                    if len(wrong_preds) > 10:
+                        context_parts.append(f"\n... and {len(wrong_preds) - 10} more cases")
             
-            # Bank guidelines - critical for shadow rule detection
+            # SHAP summary from XGBoost analysis
+            if context.get('importance_summary'):
+                context_parts.append(f"=== FEATURE IMPORTANCE ANALYSIS ===\n{context['importance_summary']}")
+            
+            # L1 Analysis from XGBoost
+            if context.get('l1_analysis'):
+                l1 = context['l1_analysis']
+                l1_summary = {
+                    'column': l1.get('column'),
+                    'accuracy': l1.get('metrics', {}).get('accuracy'),
+                    'precision': l1.get('metrics', {}).get('precision'),
+                    'recall': l1.get('metrics', {}).get('recall'),
+                    'top_features': list(l1.get('feature_importance', {}).keys())[:5]
+                }
+                context_parts.append(f"=== L1 DECISION ANALYSIS ===\n{json.dumps(l1_summary, indent=2)}")
+            
+            # L2 Analysis from XGBoost
+            if context.get('l2_analysis'):
+                l2 = context['l2_analysis']
+                l2_summary = {
+                    'column': l2.get('column'),
+                    'accuracy': l2.get('metrics', {}).get('accuracy'),
+                    'precision': l2.get('metrics', {}).get('precision'),
+                    'recall': l2.get('metrics', {}).get('recall'),
+                    'top_features': list(l2.get('feature_importance', {}).keys())[:5]
+                }
+                context_parts.append(f"=== L2 DECISION ANALYSIS ===\n{json.dumps(l2_summary, indent=2)}")
+            
+            # Prediction breakdown
+            if context.get('prediction_breakdown'):
+                breakdown = context['prediction_breakdown']
+                context_parts.append(f"=== PREDICTION BREAKDOWN ===\n{json.dumps(breakdown, indent=2)}")
+            
+            # Bank guidelines
             if context.get('guidelines'):
                 guidelines_data = context['guidelines']
                 if isinstance(guidelines_data, list) and len(guidelines_data) > 0:
                     guidelines_summary = []
-                    for g in guidelines_data[:10]:  # Limit to top 10 guidelines
+                    for g in guidelines_data[:10]:
                         summary = f"- [{g.get('category', 'custom').upper()}] {g.get('title', 'Untitled')}"
                         if g.get('rules'):
                             summary += f"\n  Rules: {', '.join(g['rules'][:3])}"
                         guidelines_summary.append(summary)
                     context_parts.append(f"=== BANK GUIDELINES ===\n" + "\n".join(guidelines_summary))
-            
-            # Analyst decision if available
-            if context.get('analyst_decision'):
-                decision_data = json.dumps(context['analyst_decision'], indent=2)
-                context_parts.append(f"=== ANALYST DECISION ===\n{decision_data}")
-            
-            # Historical analyst decisions for pattern detection
-            if context.get('analyst_decisions_history'):
-                history_summary = context['analyst_decisions_history']
-                if isinstance(history_summary, list) and len(history_summary) > 0:
-                    context_parts.append(f"=== ANALYST DECISION HISTORY (for pattern detection) ===\n{json.dumps(history_summary[:20], indent=2)}")
-            
-            # Global patterns for comparison
-            if context.get('global'):
-                global_data = context['global']
-                global_summary = {
-                    'model_version': global_data.get('model_version'),
-                    'top_features': global_data.get('global_importance', [])[:5],
-                    'sample_size': global_data.get('reliability', {}).get('sample_size'),
-                }
-                context_parts.append(f"=== GLOBAL MODEL PATTERNS ===\n{json.dumps(global_summary, indent=2)}")
             
             # Data schema for feature context
             if context.get('data_schema'):
@@ -754,11 +747,6 @@ BE SPECIFIC:
                     'feature_types': {f['name']: f['dtype'] for f in context['data_schema'].get('features', [])[:10]}
                 }
                 context_parts.append(f"=== DATA SCHEMA ===\n{json.dumps(schema_summary, indent=2)}")
-            
-            # Code context (abbreviated)
-            if context.get('ml_code'):
-                code_preview = context['ml_code'][:1000] + "..." if len(context.get('ml_code', '')) > 1000 else context.get('ml_code', '')
-                context_parts.append(f"=== MODEL CODE ===\n{code_preview}")
             
             if context_parts:
                 context_message = "--- TRANSACTION & ANALYST CONTEXT ---\n\n" + "\n\n".join(context_parts)
@@ -975,7 +963,7 @@ Generate Python code to analyze a specific fraud alert's analyst decisions."""
         history.add_user_message(f"Case analysis request: {user_code[:100]}...")
         history.add_ai_message(response_msg.content)
         self.save_history()
-        
+
         return response_msg.content
 
     async def guide_schema_analysis(self, session_id: str, user_code: str) -> str:

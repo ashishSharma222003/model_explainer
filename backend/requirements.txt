@@ -9,3 +9,7 @@ pandas
 scikit-learn
 numpy
 pydantic
+xgboost
+shap
+matplotlib
+graphviz

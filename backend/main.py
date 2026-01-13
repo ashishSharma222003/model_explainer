@@ -13,6 +13,7 @@ from chat import chat_manager
 from sessions import session_manager
 from report_generator import report_generator, ReportRequest, ReportType, ReportFormat
 from kernel_manager import kernel_manager, CodeExecutionRequest
+from xgboost_analyzer import xgboost_analyzer
 
 app = FastAPI(title="Model Explainer API")
 
@@ -240,6 +241,161 @@ async def get_csv_data(session_id: str):
             return {"fileName": "", "rowCount": 0, "data": []}
     except Exception as e:
         print(f"Error getting CSV data: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============ XGBoost Analysis Endpoints ============
+
+@app.post("/sessions/{session_id}/analyze")
+async def analyze_session_data(session_id: str):
+    """
+    Run XGBoost analysis on session CSV data.
+    Automatically:
+    - Detects L1/L2 decision columns
+    - Trains XGBoost models
+    - Generates SHAP analysis
+    - Identifies wrong predictions
+    """
+    try:
+        # Get CSV data
+        csv_data = session_manager.get_csv_data(session_id)
+        if not csv_data or not csv_data.get('data'):
+            raise HTTPException(status_code=404, detail="No CSV data found for this session")
+        
+        # Run analysis
+        result = await xgboost_analyzer.analyze(csv_data['data'])
+        
+        if not result.success:
+            raise HTTPException(status_code=400, detail=result.error)
+        
+        # Save analysis result to session
+        session = session_manager.get_session(session_id)
+        if session:
+            session['analysisResult'] = result.model_dump()
+            session_manager.save_session(session)
+        
+        return result.model_dump()
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error analyzing session data: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/sessions/{session_id}/analysis")
+async def get_analysis_result(session_id: str):
+    """Get the stored analysis result for a session."""
+    try:
+        session = session_manager.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        analysis_result = session.get('analysisResult')
+        if not analysis_result:
+            raise HTTPException(status_code=404, detail="No analysis result found. Run /analyze first.")
+        
+        return analysis_result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting analysis result: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/analysis/hyperparameters")
+async def get_hyperparameters():
+    """Get current XGBoost hyperparameters."""
+    return xgboost_analyzer.get_hyperparameters()
+
+
+@app.post("/analysis/hyperparameters")
+async def set_hyperparameters(
+    n_estimators: int = Body(100, embed=True),
+    max_depth: int = Body(5, embed=True),
+    learning_rate: float = Body(0.1, embed=True),
+    min_child_weight: int = Body(1, embed=True),
+    subsample: float = Body(0.8, embed=True),
+    colsample_bytree: float = Body(0.8, embed=True),
+    gamma: float = Body(0, embed=True),
+    reg_alpha: float = Body(0, embed=True),
+    reg_lambda: float = Body(1, embed=True),
+    random_state: int = Body(42, embed=True)
+):
+    """
+    Set XGBoost hyperparameters for analysis.
+    These will be used in subsequent analysis runs.
+    
+    Parameters:
+    - n_estimators: Number of boosting rounds (trees)
+    - max_depth: Maximum depth of each tree (controls complexity)
+    - learning_rate: Step size shrinkage (lower = more conservative)
+    - min_child_weight: Minimum sum of instance weight in a child
+    - subsample: Subsample ratio of training instances
+    - colsample_bytree: Subsample ratio of columns when constructing each tree
+    - gamma: Minimum loss reduction required to make a split
+    - reg_alpha: L1 regularization term on weights
+    - reg_lambda: L2 regularization term on weights
+    - random_state: Random seed for reproducibility
+    """
+    try:
+        xgboost_analyzer.set_hyperparameters({
+            'n_estimators': n_estimators,
+            'max_depth': max_depth,
+            'learning_rate': learning_rate,
+            'min_child_weight': min_child_weight,
+            'subsample': subsample,
+            'colsample_bytree': colsample_bytree,
+            'gamma': gamma,
+            'reg_alpha': reg_alpha,
+            'reg_lambda': reg_lambda,
+            'random_state': random_state
+        })
+        return {
+            "success": True,
+            "message": "Hyperparameters updated",
+            "hyperparameters": xgboost_analyzer.get_hyperparameters()
+        }
+    except Exception as e:
+        print(f"Error setting hyperparameters: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/sessions/{session_id}/wrong-predictions")
+async def get_wrong_predictions(
+    session_id: str,
+    case_type: Optional[str] = None  # 'false_positive' or 'false_negative'
+):
+    """Get wrong predictions from the analysis result."""
+    try:
+        session = session_manager.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        analysis_result = session.get('analysisResult')
+        if not analysis_result:
+            raise HTTPException(status_code=404, detail="No analysis result found. Run /analyze first.")
+        
+        wrong_predictions = analysis_result.get('wrong_predictions', [])
+        
+        # Filter by case type if specified
+        if case_type:
+            wrong_predictions = [p for p in wrong_predictions if p.get('case_type') == case_type]
+        
+        return {
+            "total": len(wrong_predictions),
+            "predictions": wrong_predictions
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting wrong predictions: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 

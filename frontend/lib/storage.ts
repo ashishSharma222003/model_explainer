@@ -144,6 +144,10 @@ export interface Session {
   detectedShadowRules?: DetectedShadowRule[];  // Detected patterns from analyst behavior
   // Saved smart filters (user-created filters that persist)
   savedSmartFilters?: SavedSmartFilter[];
+  // Random Forest analysis result
+  analysisResult?: any;
+  // Selected wrong predictions for chat
+  selectedWrongPredictions?: any[];
 }
 
 const SESSIONS_KEY = 'model_explainer_sessions';
