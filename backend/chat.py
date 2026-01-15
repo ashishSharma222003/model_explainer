@@ -4,7 +4,10 @@ from typing import Dict, List, Any
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, BaseMessage
 from langchain_community.chat_message_histories import ChatMessageHistory
-from models import ExplainGlobalRequest, ExplainTransactionRequest, ChatResponse, TxnChatResponse
+from models import (
+    ExplainGlobalRequest, ExplainTransactionRequest, ChatResponse, TxnChatResponse,
+    HumanReadableShadowRule, ShadowRulesConversionResponse, ExtractShadowRulesFromTxnResponse
+)
 import logging
 
 # Configure logging
@@ -739,14 +742,50 @@ BE SPECIFIC:
                         guidelines_summary.append(summary)
                     context_parts.append(f"=== BANK GUIDELINES ===\n" + "\n".join(guidelines_summary))
             
-            # Data schema for feature context
-            if context.get('data_schema'):
+            # Data schema for feature context - with more detail
+            if context.get('dataSchema') or context.get('data_schema'):
+                schema = context.get('dataSchema') or context.get('data_schema')
+                # Include more schema details for better context
                 schema_summary = {
-                    'total_features': context['data_schema'].get('dataset_info', {}).get('total_features'),
-                    'target': context['data_schema'].get('target_variable'),
-                    'feature_types': {f['name']: f['dtype'] for f in context['data_schema'].get('features', [])[:10]}
+                    'total_features': schema.get('dataset_info', {}).get('total_features'),
+                    'target': schema.get('target_variable'),
+                    'rows': schema.get('dataset_info', {}).get('total_rows'),
                 }
+                # Include feature descriptions for context
+                features_info = []
+                for f in schema.get('features', [])[:15]:
+                    feat_info = f"{f.get('name')}: {f.get('dtype')}"
+                    if f.get('description'):
+                        feat_info += f" - {f.get('description')}"
+                    features_info.append(feat_info)
+                schema_summary['features'] = features_info
                 context_parts.append(f"=== DATA SCHEMA ===\n{json.dumps(schema_summary, indent=2)}")
+            
+            # Decision tree rules from Random Forest analysis
+            if context.get('decision_tree_rules'):
+                dt_rules = context['decision_tree_rules']
+                context_parts.append("=== RANDOM FOREST DECISION TREE RULES ===")
+                context_parts.append("NOTE: These rules were learned from the training data. The transactions we're discussing have predictions that DIFFER from these rules.")
+                
+                if dt_rules.get('l1_decision_rules'):
+                    l1_rules = dt_rules['l1_decision_rules'][:5]  # First 5 rules
+                    context_parts.append(f"\nL1 Decision Rules (accuracy: {dt_rules.get('l1_accuracy', 'N/A')}):")
+                    for i, rule in enumerate(l1_rules, 1):
+                        context_parts.append(f"  {i}. {rule[:200]}...")  # Truncate long rules
+                
+                if dt_rules.get('l2_decision_rules'):
+                    l2_rules = dt_rules['l2_decision_rules'][:5]  # First 5 rules
+                    context_parts.append(f"\nL2 Decision Rules (accuracy: {dt_rules.get('l2_accuracy', 'N/A')}):")
+                    for i, rule in enumerate(l2_rules, 1):
+                        context_parts.append(f"  {i}. {rule[:200]}...")
+                
+                if dt_rules.get('l1_top_features') or dt_rules.get('l2_top_features'):
+                    context_parts.append(f"\nTop features for L1: {', '.join(dt_rules.get('l1_top_features', []))}")
+                    context_parts.append(f"Top features for L2: {', '.join(dt_rules.get('l2_top_features', []))}")
+            
+            # Context explanation (why we're chatting about these transactions)
+            if context.get('txnJson', {}).get('context_explanation'):
+                context_parts.insert(0, f"=== WHY WE'RE ANALYZING THESE TRANSACTIONS ===\n{context['txnJson']['context_explanation']}")
             
             if context_parts:
                 context_message = "--- TRANSACTION & ANALYST CONTEXT ---\n\n" + "\n\n".join(context_parts)
@@ -767,6 +806,162 @@ BE SPECIFIC:
         history.add_ai_message(response.general_answer)
         self.save_history()
 
+        return response
+
+    async def extract_shadow_rules_from_transactions(
+        self,
+        session_id: str,
+        selected_transactions: List[Dict[str, Any]],
+        data_schema: Dict[str, Any] = None,
+        decision_tree_rules: Dict[str, Any] = None,
+        chat_history: List[Dict[str, str]] = None
+    ) -> ExtractShadowRulesFromTxnResponse:
+        """
+        Dedicated method for extracting shadow rules from selected wrong predictions.
+        
+        This method analyzes the selected transactions (false positives/negatives)
+        and identifies hidden patterns (shadow rules) that explain why analyst
+        decisions differed from the model predictions.
+        
+        Args:
+            session_id: Session identifier
+            selected_transactions: List of wrong prediction cases to analyze
+            data_schema: Schema information for feature context
+            decision_tree_rules: L1/L2 rules and accuracy from Random Forest
+            chat_history: Previous conversation for additional context
+            
+        Returns:
+            ExtractShadowRulesFromTxnResponse with discovered shadow rules
+        """
+        
+        system_content = """You are an expert in discovering SHADOW RULES in banking fraud detection systems.
+
+WHAT ARE SHADOW RULES?
+Shadow rules are undocumented patterns that analysts follow when making decisions that differ from the ML model's predictions. These are rules that exist in practice but are NOT written in official guidelines.
+
+YOUR TASK:
+Analyze the selected WRONG PREDICTIONS (false positives and false negatives) to discover shadow rules that explain:
+- Why analysts flagged legitimate transactions as fraud (False Positives)
+- Why analysts cleared actual fraud as legitimate (False Negatives)
+
+ANALYSIS APPROACH:
+
+1. **EXAMINE THE DATA**: Look at the feature values in the selected transactions
+   - What patterns do the False Positives share?
+   - What patterns do the False Negatives share?
+   - Are there specific feature thresholds or combinations?
+
+2. **COMPARE TO DECISION TREES**: The Random Forest learned certain rules from the training data.
+   If transactions differ from these rules, WHY?
+   - Is there a rule analysts follow that the model didn't capture?
+   - Is there a business context the model doesn't understand?
+
+3. **IDENTIFY SHADOW RULES**: For each pattern found:
+   - Describe it in plain English
+   - Specify if it applies to L1 or L2 decisions
+   - State what outcome it leads to (block/release/escalate)
+   - Explain the reasoning behind why this rule exists
+   - List the key features involved
+
+EXAMPLES OF SHADOW RULES:
+- "If the customer is a VIP (loyalty_tier = 'platinum'), release even if amount is high"
+- "If transaction happens during business hours from a known merchant, be more lenient"
+- "If there are multiple small transactions in sequence, escalate regardless of risk score"
+
+BE SPECIFIC:
+- Reference actual feature names and values from the transactions
+- Quantify thresholds when possible (e.g., "amount > 5000")
+- Identify how many of the selected transactions match each rule"""
+
+        messages = [SystemMessage(content=system_content)]
+        
+        # Build context message
+        context_parts = []
+        
+        # Transaction data (the main focus)
+        if selected_transactions:
+            fp_cases = [t for t in selected_transactions if t.get('case_type') == 'false_positive']
+            fn_cases = [t for t in selected_transactions if t.get('case_type') == 'false_negative']
+            
+            context_parts.append(f"=== SELECTED TRANSACTIONS TO ANALYZE ({len(selected_transactions)} cases) ===")
+            context_parts.append(f"False Positives (analyst said fraud, was actually legitimate): {len(fp_cases)}")
+            context_parts.append(f"False Negatives (analyst said legitimate, was actually fraud): {len(fn_cases)}")
+            
+            # Include all selected transactions (limited to 20 for token efficiency)
+            cases_to_show = selected_transactions[:20]
+            context_parts.append(f"\nTransaction Details (showing {len(cases_to_show)} of {len(selected_transactions)}):")
+            context_parts.append(json.dumps(cases_to_show, indent=2))
+        
+        # Decision tree context
+        if decision_tree_rules:
+            context_parts.append("\n=== RANDOM FOREST DECISION TREE RULES ===")
+            context_parts.append("These rules were learned from the training data. The transactions above DIFFER from these rules.")
+            
+            if decision_tree_rules.get('l1_decision_rules'):
+                l1_rules = decision_tree_rules['l1_decision_rules'][:5]
+                context_parts.append(f"\nL1 Rules (accuracy: {decision_tree_rules.get('l1_accuracy', 'N/A')}):")
+                for i, rule in enumerate(l1_rules, 1):
+                    context_parts.append(f"  {i}. {rule[:300]}")
+            
+            if decision_tree_rules.get('l2_decision_rules'):
+                l2_rules = decision_tree_rules['l2_decision_rules'][:5]
+                context_parts.append(f"\nL2 Rules (accuracy: {decision_tree_rules.get('l2_accuracy', 'N/A')}):")
+                for i, rule in enumerate(l2_rules, 1):
+                    context_parts.append(f"  {i}. {rule[:300]}")
+            
+            if decision_tree_rules.get('l1_top_features'):
+                context_parts.append(f"\nTop features for L1: {', '.join(decision_tree_rules.get('l1_top_features', []))}")
+            if decision_tree_rules.get('l2_top_features'):
+                context_parts.append(f"Top features for L2: {', '.join(decision_tree_rules.get('l2_top_features', []))}")
+        
+        # Schema context
+        if data_schema:
+            context_parts.append("\n=== DATA SCHEMA ===")
+            features_info = []
+            for f in data_schema.get('features', [])[:15]:
+                feat_info = f"{f.get('name')}: {f.get('dtype')}"
+                if f.get('description'):
+                    feat_info += f" - {f.get('description')}"
+                features_info.append(feat_info)
+            context_parts.append("\n".join(features_info))
+        
+        # Chat history context
+        if chat_history and len(chat_history) > 0:
+            context_parts.append("\n=== PREVIOUS CONVERSATION ===")
+            context_parts.append("The user has already discussed these transactions in chat:")
+            for msg in chat_history[-6:]:  # Last 6 messages
+                role = msg.get('role', 'user')
+                content = msg.get('content', '')[:500]  # Truncate long messages
+                context_parts.append(f"[{role.upper()}]: {content}")
+        
+        if context_parts:
+            context_message = "\n".join(context_parts)
+            messages.append(SystemMessage(content=context_message))
+        
+        # The extraction prompt
+        extraction_prompt = f"""Analyze the {len(selected_transactions)} selected transactions and extract ALL shadow rules you can identify.
+
+For each shadow rule, provide:
+1. A clear, plain English description
+2. Whether it applies to L1 or L2 decisions
+3. What outcome it leads to (block/release/escalate)
+4. The reasoning behind why this rule exists
+5. The key features involved
+6. How many of the selected transactions match this rule
+
+Discover as many distinct shadow rules as possible from the data."""
+
+        messages.append(HumanMessage(content=extraction_prompt))
+        
+        # Use structured output for clean parsing
+        structured_llm = self.llm.with_structured_output(ExtractShadowRulesFromTxnResponse)
+        response: ExtractShadowRulesFromTxnResponse = structured_llm.invoke(messages)
+        
+        # Set transactions_analyzed count
+        response.transactions_analyzed = len(selected_transactions)
+        
+        logger.info(f"Extracted {len(response.shadow_rules)} shadow rules from {len(selected_transactions)} transactions")
+        
         return response
 
     async def guide_code_to_global_json(self, session_id: str, user_code: str, data_schema: str = None) -> str:
@@ -1212,5 +1407,137 @@ Now analyze the user's code and provide a tailored implementation."""
         Legacy method - routes to global JSON generation.
         """
         return await self.guide_code_to_global_json(session_id, user_code)
+
+    async def convert_rules_to_human_readable(
+        self,
+        l1_rules: List[str],
+        l2_rules: List[str],
+        data_schema: Dict[str, Any] = None,
+        existing_rules: List[str] = None
+    ) -> ShadowRulesConversionResponse:
+        """
+        Convert decision tree rules to simple human-readable language using LLM.
+        Avoids duplicates by checking against existing rules.
+        """
+        existing_rules = existing_rules or []
+        existing_set = set(r.lower().strip() for r in existing_rules)
+        
+        # Filter out rules that already exist
+        new_l1_rules = [r for r in l1_rules if r.lower().strip() not in existing_set]
+        new_l2_rules = [r for r in l2_rules if r.lower().strip() not in existing_set]
+        
+        if not new_l1_rules and not new_l2_rules:
+            return ShadowRulesConversionResponse(rules=[])
+        
+        # Build schema context
+        schema_context = ""
+        if data_schema:
+            if 'columns' in data_schema:
+                schema_context = f"\nData columns available: {', '.join(data_schema['columns'][:20])}"
+            if 'detected_columns' in data_schema:
+                detected = data_schema['detected_columns']
+                if detected.get('l1_decision'):
+                    schema_context += f"\nL1 Decision Column: {detected['l1_decision']}"
+                if detected.get('l2_decision'):
+                    schema_context += f"\nL2 Decision Column: {detected['l2_decision']}"
+        
+        system_prompt = f"""You are an expert at converting technical decision tree rules into simple, plain English that anyone can understand.
+
+Your task is to convert each decision tree rule into a simple rule that:
+1. Uses everyday language - NO mathematical symbols like <=, >=, <, >, ==
+2. Uses words like "less than", "more than", "at least", "at most", "equals"
+3. Explains what the rule means in practical terms
+4. Is easy for a non-technical person to understand
+5. Captures the essence of when to block, release, or escalate a transaction
+
+{schema_context}
+
+For each rule, extract:
+- The simple human-readable version
+- The original technical rule (keep exactly as provided)
+- Which decision it applies to (L1 or L2)
+- The predicted outcome (block, release, or escalate)
+- Key factors involved (in plain English)
+- Confidence level based on sample size (high if >100 samples, medium if 20-100, low if <20)
+
+Examples of good conversions:
+- Technical: "IF transaction_amount <= 500 AND time_of_day >= 22 THEN block"
+- Simple: "Block transactions when the amount is $500 or less AND it happens at night (after 10 PM)"
+
+- Technical: "IF velocity_24h > 5 AND is_new_customer == 1 THEN escalate"  
+- Simple: "Escalate for review when a new customer makes more than 5 transactions in 24 hours"
+
+- Technical: "IF merchant_risk_score <= 0.3 AND transaction_amount <= 1000 THEN release"
+- Simple: "Release transactions when the merchant is low-risk and the amount is $1,000 or less"
+
+IMPORTANT: Make the rules sound natural and conversational, like explaining to a colleague."""
+
+        # Prepare the rules for conversion
+        rules_to_convert = []
+        for rule in new_l1_rules:
+            rules_to_convert.append({"rule": rule, "target": "l1"})
+        for rule in new_l2_rules:
+            rules_to_convert.append({"rule": rule, "target": "l2"})
+        
+        user_prompt = f"""Convert these {len(rules_to_convert)} decision tree rules to simple human-readable language:
+
+{json.dumps(rules_to_convert, indent=2)}
+
+Return ALL rules converted. Each rule should have a clear, simple explanation."""
+
+        try:
+            # Use structured output
+            structured_llm = self.llm.with_structured_output(ShadowRulesConversionResponse)
+            
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt)
+            ]
+            
+            response = structured_llm.invoke(messages)
+            
+            # Ensure original rules are preserved
+            for i, converted_rule in enumerate(response.rules):
+                if i < len(rules_to_convert):
+                    converted_rule.original_rule = rules_to_convert[i]["rule"]
+                    converted_rule.target_decision = rules_to_convert[i]["target"]
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error converting rules: {e}")
+            # Fallback: return rules with basic conversion
+            fallback_rules = []
+            for item in rules_to_convert:
+                rule_text = item["rule"]
+                target = item["target"]
+                
+                # Basic extraction
+                outcome = "unknown"
+                if "block" in rule_text.lower():
+                    outcome = "block"
+                elif "release" in rule_text.lower():
+                    outcome = "release"
+                elif "escalate" in rule_text.lower():
+                    outcome = "escalate"
+                
+                # Extract sample count
+                samples = 0
+                import re
+                samples_match = re.search(r'samples?\s*[=:]\s*(\d+)', rule_text, re.IGNORECASE)
+                if samples_match:
+                    samples = int(samples_match.group(1))
+                
+                fallback_rules.append(HumanReadableShadowRule(
+                    simple_rule=f"[Auto-converted] {rule_text[:200]}",
+                    original_rule=rule_text,
+                    target_decision=target,
+                    predicted_outcome=outcome,
+                    key_factors=[],
+                    confidence_level="medium" if samples > 20 else "low",
+                    samples_affected=samples
+                ))
+            
+            return ShadowRulesConversionResponse(rules=fallback_rules)
 
 chat_manager = ChatManager()

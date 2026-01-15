@@ -6,14 +6,19 @@ import os
 import json
 import traceback
 import io
+from datetime import datetime
 from models import (
-    GlobalExplanation, TransactionExplanation
+    GlobalExplanation, TransactionExplanation,
+    SimilarShadowRule, DeduplicationResult, VectorStoreStats,
+    AddRuleToIndexRequest, AddRulesBulkRequest, CheckDuplicateRequest,
+    ExtractShadowRulesRequest
 )
 from chat import chat_manager
 from sessions import session_manager
 from report_generator import report_generator, ReportRequest, ReportType, ReportFormat
 from kernel_manager import kernel_manager, CodeExecutionRequest
 from xgboost_analyzer import xgboost_analyzer
+from shadow_rules_vectorstore import get_vector_store, clear_vector_store_cache
 
 app = FastAPI(title="Model Explainer API")
 
@@ -82,6 +87,43 @@ async def chat_txn_endpoint(
         }
     except Exception as e:
         print(f"Error in chat_txn: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/extract-shadow-rules")
+async def extract_shadow_rules_endpoint(request: ExtractShadowRulesRequest):
+    """
+    Dedicated endpoint for extracting shadow rules from selected transactions.
+    
+    This analyzes wrong predictions (false positives/negatives) to discover
+    hidden patterns (shadow rules) that explain why analyst decisions
+    differed from model predictions.
+    
+    Args:
+        request: Contains selected_transactions, data_schema, decision_tree_rules, chat_history
+        
+    Returns:
+        Structured response with discovered shadow rules, summary, and count
+    """
+    try:
+        response = await chat_manager.extract_shadow_rules_from_transactions(
+            session_id=request.session_id,
+            selected_transactions=request.selected_transactions,
+            data_schema=request.data_schema,
+            decision_tree_rules=request.decision_tree_rules,
+            chat_history=request.chat_history
+        )
+        
+        return {
+            "success": True,
+            "shadow_rules": [rule.model_dump() for rule in response.shadow_rules],
+            "summary": response.summary,
+            "transactions_analyzed": response.transactions_analyzed,
+            "rules_count": len(response.shadow_rules)
+        }
+    except Exception as e:
+        print(f"Error extracting shadow rules: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -502,7 +544,8 @@ async def generate_report(
         current_reports.append(report_record)
         
         # Update session with new report
-        session_manager.save_session(session_id, {"reports": current_reports})
+        session_data["reports"] = current_reports
+        session_manager.save_session(session_data)
         
         return {
             "success": True,
@@ -653,3 +696,311 @@ async def upload_file_to_kernel(
         print(f"Error uploading file: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============ Shadow Rules Conversion ============
+
+@app.post("/convert-shadow-rules")
+async def convert_shadow_rules(
+    l1_rules: List[str] = Body(default=[]),
+    l2_rules: List[str] = Body(default=[]),
+    data_schema: Optional[Dict[str, Any]] = Body(default=None),
+    existing_rules: List[str] = Body(default=[])
+):
+    """
+    Convert decision tree rules to human-readable shadow rules using LLM.
+    Avoids duplicates by checking against existing_rules.
+    """
+    try:
+        response = await chat_manager.convert_rules_to_human_readable(
+            l1_rules=l1_rules,
+            l2_rules=l2_rules,
+            data_schema=data_schema,
+            existing_rules=existing_rules
+        )
+        
+        return {
+            "success": True,
+            "rules": [rule.model_dump() for rule in response.rules],
+            "count": len(response.rules)
+        }
+    except Exception as e:
+        print(f"Error converting shadow rules: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============ Shadow Rules Vector Store Endpoints ============
+
+@app.post("/sessions/{session_id}/shadow-rules/check-duplicate")
+async def check_shadow_rule_duplicate(
+    session_id: str,
+    request: CheckDuplicateRequest
+):
+    """
+    Check if a shadow rule is semantically similar to existing rules.
+    Returns deduplication result with similar rules found.
+    """
+    try:
+        vector_store = get_vector_store(session_id)
+        similar_rules = vector_store.find_similar(
+            query_text=request.rule_text,
+            threshold=request.threshold,
+            top_k=5
+        )
+        
+        # Convert to response models
+        similar_rule_models = [
+            SimilarShadowRule(
+                rule_id=r.rule_id,
+                rule_text=r.rule_text,
+                simple_rule=r.simple_rule,
+                similarity_score=r.similarity_score,
+                source_analysis=r.source_analysis,
+                target_decision=r.target_decision,
+                predicted_outcome=r.predicted_outcome,
+                is_duplicate=r.is_duplicate
+            )
+            for r in similar_rules
+        ]
+        
+        # Determine if it's a duplicate
+        is_duplicate = any(r.is_duplicate for r in similar_rules)
+        
+        # Suggest action
+        if is_duplicate:
+            suggested_action = "use_existing"
+        elif similar_rules and similar_rules[0].similarity_score > 0.8:
+            suggested_action = "review"
+        else:
+            suggested_action = "save_new"
+        
+        return DeduplicationResult(
+            is_duplicate=is_duplicate,
+            similar_rules=similar_rule_models,
+            suggested_action=suggested_action
+        )
+        
+    except Exception as e:
+        print(f"Error checking duplicate: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/sessions/{session_id}/shadow-rules/add-to-index")
+async def add_shadow_rule_to_index(
+    session_id: str,
+    request: AddRuleToIndexRequest
+):
+    """
+    Add a shadow rule to the session's vector index.
+    """
+    try:
+        vector_store = get_vector_store(session_id)
+        success = vector_store.add_rule(
+            rule_id=request.rule_id,
+            rule_text=request.rule_text,
+            source_analysis=request.source_analysis,
+            simple_rule=request.simple_rule,
+            target_decision=request.target_decision,
+            predicted_outcome=request.predicted_outcome,
+            confidence_level=request.confidence_level,
+            samples_affected=request.samples_affected
+        )
+        
+        return {
+            "success": success,
+            "message": "Rule added to index" if success else "Rule already exists"
+        }
+        
+    except Exception as e:
+        print(f"Error adding rule to index: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/sessions/{session_id}/shadow-rules/add-bulk")
+async def add_shadow_rules_bulk(
+    session_id: str,
+    request: AddRulesBulkRequest
+):
+    """
+    Add multiple shadow rules at once (efficient for decision tree rules).
+    """
+    try:
+        vector_store = get_vector_store(session_id)
+        
+        # Convert request models to dicts
+        rules_data = [
+            {
+                "id": r.rule_id,
+                "text": r.rule_text,
+                "source_analysis": r.source_analysis,
+                "simple_rule": r.simple_rule,
+                "target_decision": r.target_decision,
+                "predicted_outcome": r.predicted_outcome,
+                "confidence_level": r.confidence_level,
+                "samples_affected": r.samples_affected
+            }
+            for r in request.rules
+        ]
+        
+        count = vector_store.add_rules_bulk(rules_data)
+        
+        return {
+            "success": True,
+            "added_count": count,
+            "message": f"Added {count} rules to index"
+        }
+        
+    except Exception as e:
+        print(f"Error adding rules in bulk: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/sessions/{session_id}/shadow-rules/remove-from-index/{rule_id}")
+async def remove_shadow_rule_from_index(
+    session_id: str,
+    rule_id: str
+):
+    """
+    Remove a shadow rule from the session's vector index.
+    """
+    try:
+        vector_store = get_vector_store(session_id)
+        success = vector_store.delete_rule(rule_id)
+        
+        return {
+            "success": success,
+            "message": "Rule removed from index" if success else "Rule not found"
+        }
+        
+    except Exception as e:
+        print(f"Error removing rule from index: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/sessions/{session_id}/shadow-rules/clear-by-source/{source}")
+async def clear_shadow_rules_by_source(
+    session_id: str,
+    source: str
+):
+    """
+    Delete all shadow rules with a given source.
+    Used before re-running analysis to clear old decision tree rules.
+    
+    Args:
+        source: 'decision-tree', 'chat-discovered', or 'manual'
+    """
+    try:
+        vector_store = get_vector_store(session_id)
+        deleted_count = vector_store.delete_rules_by_source(source)
+        
+        return {
+            "success": True,
+            "deleted_count": deleted_count,
+            "message": f"Deleted {deleted_count} '{source}' rules from index"
+        }
+        
+    except Exception as e:
+        print(f"Error clearing rules by source: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/sessions/{session_id}/shadow-rules/search")
+async def search_similar_shadow_rules(
+    session_id: str,
+    query: str,
+    top_k: int = 5,
+    threshold: float = 0.0
+):
+    """
+    Search for shadow rules similar to the query text.
+    """
+    try:
+        vector_store = get_vector_store(session_id)
+        similar_rules = vector_store.find_similar(
+            query_text=query,
+            threshold=threshold,
+            top_k=top_k
+        )
+        
+        return {
+            "results": [r.to_dict() for r in similar_rules],
+            "count": len(similar_rules)
+        }
+        
+    except Exception as e:
+        print(f"Error searching similar rules: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/sessions/{session_id}/shadow-rules/stats")
+async def get_shadow_rules_stats(session_id: str):
+    """
+    Get statistics about the session's shadow rules vector store.
+    """
+    try:
+        vector_store = get_vector_store(session_id)
+        stats = vector_store.get_stats()
+        
+        return VectorStoreStats(
+            session_id=stats["session_id"],
+            total_rules=stats["total_rules"],
+            decision_tree_rules=stats["decision_tree_rules"],
+            chat_discovered_rules=stats["chat_discovered_rules"],
+            manual_rules=stats["manual_rules"],
+            index_size=stats["index_size"]
+        )
+        
+    except Exception as e:
+        print(f"Error getting stats: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/sessions/{session_id}/shadow-rules/all")
+async def get_all_shadow_rules_from_index(session_id: str):
+    """
+    Get all shadow rules from the vector index with their metadata.
+    """
+    try:
+        vector_store = get_vector_store(session_id)
+        rules = vector_store.get_all_rules()
+        
+        return {
+            "rules": rules,
+            "count": len(rules)
+        }
+        
+    except Exception as e:
+        print(f"Error getting all rules: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/sessions/{session_id}/shadow-rules/rebuild-index")
+async def rebuild_shadow_rules_index(session_id: str):
+    """
+    Rebuild the FAISS index from metadata.
+    Useful if the index gets corrupted or out of sync.
+    """
+    try:
+        vector_store = get_vector_store(session_id)
+        vector_store._rebuild_index()
+        
+        stats = vector_store.get_stats()
+        return {
+            "success": True,
+            "message": f"Index rebuilt with {stats['total_rules']} rules"
+        }
+        
+    except Exception as e:
+        print(f"Error rebuilding index: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+

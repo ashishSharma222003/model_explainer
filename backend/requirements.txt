@@ -13,3 +13,5 @@ xgboost
 shap
 matplotlib
 graphviz
+sentence-transformers
+faiss-cpu

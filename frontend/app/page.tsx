@@ -1,20 +1,20 @@
 "use client";
 import { useState, createContext, useContext, useEffect, useCallback, useRef } from 'react';
-import { Layers, ChevronRight, Check, FileText, Terminal, User, Code2, BookOpen, BarChart3, MessageSquare } from 'lucide-react';
+import { Layers, ChevronRight, Check, FileText, BookOpen, TrendingUp, Zap } from 'lucide-react';
 import DataSchemaInput from '@/components/DataSchemaInput';
 import ResultsDashboard from '@/components/ResultsDashboard';
-import ChatPanel from '@/components/ChatPanel';
+import ShadowRulesPanel from '@/components/ShadowRulesPanel';
 import SessionPicker from '@/components/SessionPicker';
-import ReportGenerator from '@/components/ReportGenerator';
+import ExecutiveReportSection from '@/components/ExecutiveReportSection';
 import GuidelinesInput from '@/components/GuidelinesInput';
-import { 
-  Session, 
+import {
+  Session,
   CodeSuggestion,
   ChatMessageWithContext,
   ContextSnapshot,
-  createNewSession, 
-  getAllSessions, 
-  saveSession, 
+  createNewSession,
+  getAllSessions,
+  saveSession,
   getCurrentSessionId,
   setCurrentSessionId,
   deleteSession as deleteSessionFromStorage,
@@ -64,12 +64,13 @@ interface AppContextType {
 
 export const AppContext = createContext<AppContextType | null>(null);
 
-type Step = 'data' | 'results' | 'chat';
+type Step = 'data' | 'results' | 'discovery' | 'reports';
 
 const STEPS: { id: Step; label: string; icon: any }[] = [
   { id: 'data', label: 'Data', icon: FileText },
-  { id: 'results', label: 'Results', icon: BarChart3 },
-  { id: 'chat', label: 'Chat', icon: MessageSquare },
+  { id: 'results', label: 'Insights', icon: TrendingUp },
+  { id: 'discovery', label: 'Discovery', icon: Zap },
+  { id: 'reports', label: 'Reports', icon: FileText },
 ];
 
 function getStepFromSession(session: Session): Step {
@@ -84,11 +85,10 @@ export default function Home() {
   const [allSessions, setAllSessions] = useState<Session[]>([]);
   const [isHydrated, setIsHydrated] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
-  const [showReportGenerator, setShowReportGenerator] = useState(false);
   const [showGuidelines, setShowGuidelines] = useState(false);
-  
+
   const shouldSave = useRef(false);
-  
+
   // Suggestions are derived from session but managed separately for reactivity
   const suggestions = session.suggestions || [];
 
@@ -96,7 +96,7 @@ export default function Home() {
   useEffect(() => {
     const loadSessions = async () => {
       let sessions = getAllSessions();
-      
+
       try {
         const backendData = await getAllSessionsFromBackend();
         if (backendData.sessions.length > 0) {
@@ -115,9 +115,9 @@ export default function Home() {
       } catch (e) {
         console.warn('Could not sync with backend:', e);
       }
-      
+
       setAllSessions(sessions);
-      
+
       const lastSessionId = getCurrentSessionId();
       if (lastSessionId) {
         const lastSession = sessions.find(s => s.id === lastSessionId);
@@ -126,26 +126,26 @@ export default function Home() {
           setCurrentStep(getStepFromSession(lastSession));
         }
       }
-      
+
       setIsHydrated(true);
       setTimeout(() => {
         shouldSave.current = true;
       }, 500);
     };
-    
+
     loadSessions();
   }, []);
 
   // Auto-save session
   useEffect(() => {
     if (!isHydrated || !shouldSave.current) return;
-    
+
     setSaveStatus('saving');
     saveSession(session);
     setCurrentSessionId(session.id);
     saveSessionToBackend(session as any);
     setAllSessions(getAllSessions());
-    
+
     setSaveStatus('saved');
     const timeout = setTimeout(() => setSaveStatus('idle'), 1500);
     return () => clearTimeout(timeout);
@@ -180,7 +180,7 @@ export default function Home() {
     deleteSessionFromStorage(sessionId);
     const remainingSessions = getAllSessions();
     setAllSessions(remainingSessions);
-    
+
     if (sessionId === session.id) {
       if (remainingSessions.length > 0) {
         handleSelectSession(remainingSessions[0]);
@@ -202,8 +202,8 @@ export default function Home() {
   }, [session.suggestions, updateSession]);
 
   const dismissSuggestion = useCallback((id: string) => {
-    updateSession({ 
-      suggestions: (session.suggestions || []).map(s => s.id === id ? { ...s, dismissed: true } : s) 
+    updateSession({
+      suggestions: (session.suggestions || []).map(s => s.id === id ? { ...s, dismissed: true } : s)
     });
   }, [session.suggestions, updateSession]);
 
@@ -220,7 +220,7 @@ export default function Home() {
     // Get selected cases info from txnJson (new format)
     const selectedCasesCount = session.txnJson?.totalCases || session.txnJson?.selectedCases?.length || 0;
     const activeFilters = session.txnJson?.filters?.map((f: any) => f.label) || [];
-    
+
     return {
       hasCode: Boolean(session.mlCode && session.mlCode.length > 0),
       codeLength: session.mlCode?.length || 0,
@@ -238,10 +238,10 @@ export default function Home() {
     try {
       const result = await uploadCsvData(session.id, data, fileName);
       if (result.success) {
-        updateSession({ 
-          csvFileName: fileName, 
-          hasCsvData: true, 
-          csvRowCount: result.rowCount 
+        updateSession({
+          csvFileName: fileName,
+          hasCsvData: true,
+          csvRowCount: result.rowCount
         });
       }
     } catch (e) {
@@ -274,15 +274,15 @@ export default function Home() {
     txnJson: session.txnJson,
     setTxnJson: (json) => updateSession({ txnJson: json }),
     codeAnalyzerMessages: session.chatHistory?.codeAnalyzer || [],
-    setCodeAnalyzerMessages: (messages) => updateSession({ 
+    setCodeAnalyzerMessages: (messages) => updateSession({
       chatHistory: { ...session.chatHistory, codeAnalyzer: messages }
     }),
     globalChatMessages: session.chatHistory?.globalChat || [],
-    setGlobalChatMessages: (messages) => updateSession({ 
+    setGlobalChatMessages: (messages) => updateSession({
       chatHistory: { ...session.chatHistory, globalChat: messages }
     }),
     txnChatMessages: session.chatHistory?.txnChat || [],
-    setTxnChatMessages: (messages) => updateSession({ 
+    setTxnChatMessages: (messages) => updateSession({
       chatHistory: { ...session.chatHistory, txnChat: messages }
     }),
     createContextSnapshot,
@@ -301,7 +301,8 @@ export default function Home() {
     if (stepIndex < currentStepIndex) return true;
     if (step === 'data') return true;  // First step, always accessible
     if (step === 'results') return session.hasCsvData;  // Requires data first
-    if (step === 'chat') return session.analysisResult !== undefined;  // Requires analysis
+    if (step === 'discovery') return session.analysisResult !== undefined;  // Requires analysis
+    if (step === 'reports') return (session.shadowRules?.length || 0) > 0 || (session.chatHistory?.txnChat?.length || 0) > 0;  // Requires shadow rules or analysis chat
     return false;
   };
 
@@ -347,14 +348,13 @@ export default function Home() {
                 <p className="text-xs text-slate-500 -mt-0.5">Chat-first ML analysis</p>
               </div>
             </div>
-            
+
             <div className="flex items-center gap-3">
               {saveStatus !== 'idle' && (
-                <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                  saveStatus === 'saving' 
-                    ? 'bg-amber-500/20 text-amber-300' 
-                    : 'bg-emerald-500/20 text-emerald-300'
-                }`}>
+                <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${saveStatus === 'saving'
+                  ? 'bg-amber-500/20 text-amber-300'
+                  : 'bg-emerald-500/20 text-emerald-300'
+                  }`}>
                   {saveStatus === 'saving' ? (
                     <>
                       <div className="w-2 h-2 bg-amber-400 rounded-full animate-pulse" />
@@ -383,15 +383,7 @@ export default function Home() {
                 )}
               </button>
 
-              {/* Report Generator Button */}
-              <button
-                onClick={() => setShowReportGenerator(true)}
-                className="flex items-center gap-2 px-3 py-1.5 bg-violet-500/20 hover:bg-violet-500/30 border border-violet-500/40 rounded-lg text-xs font-medium text-violet-300 transition-all"
-              >
-                <FileText className="w-3.5 h-3.5" />
-                Report
-              </button>
-              
+
               <SessionPicker
                 sessions={allSessions}
                 currentSession={session}
@@ -399,7 +391,7 @@ export default function Home() {
                 onNewSession={handleNewSession}
                 onDeleteSession={handleDeleteSession}
               />
-              
+
               <div className="px-3 py-1.5 bg-slate-800/50 rounded-full border border-slate-700/50">
                 <span className="text-xs font-mono text-slate-400">v0.4</span>
               </div>
@@ -422,23 +414,21 @@ export default function Home() {
                     <button
                       onClick={() => isClickable && setCurrentStep(step.id)}
                       disabled={!isClickable}
-                      className={`relative flex items-center gap-2 px-3 py-2 rounded-lg transition-all text-sm font-medium ${
-                        isActive
-                          ? 'bg-cyan-500/20 border border-cyan-500/50 text-cyan-300'
-                          : isCompleted
+                      className={`relative flex items-center gap-2 px-3 py-2 rounded-lg transition-all text-sm font-medium ${isActive
+                        ? 'bg-cyan-500/20 border border-cyan-500/50 text-cyan-300'
+                        : isCompleted
                           ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20'
                           : isClickable
-                          ? 'bg-slate-800/40 border border-slate-700/40 text-slate-300 hover:bg-slate-800/60'
-                          : 'bg-slate-900/30 border border-slate-800/30 text-slate-500 opacity-50 cursor-not-allowed'
-                      }`}
+                            ? 'bg-slate-800/40 border border-slate-700/40 text-slate-300 hover:bg-slate-800/60'
+                            : 'bg-slate-900/30 border border-slate-800/30 text-slate-500 opacity-50 cursor-not-allowed'
+                        }`}
                     >
-                      <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${
-                        isActive
-                          ? 'bg-cyan-500 text-white'
-                          : isCompleted
+                      <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${isActive
+                        ? 'bg-cyan-500 text-white'
+                        : isCompleted
                           ? 'bg-emerald-500 text-white'
                           : 'bg-slate-700 text-slate-400'
-                      }`}>
+                        }`}>
                         {isCompleted ? <Check className="w-3 h-3" /> : idx + 1}
                       </div>
                       {step.label}
@@ -459,30 +449,29 @@ export default function Home() {
             <DataSchemaInput onComplete={() => handleNextStep()} />
           )}
           {currentStep === 'results' && (
-            <ResultsDashboard 
+            <ResultsDashboard
               onChatWithCase={(cases) => {
                 updateSession({ selectedWrongPredictions: cases });
-                setCurrentStep('chat');
-              }} 
+                setCurrentStep('discovery');
+              }}
             />
           )}
-          {currentStep === 'chat' && (
-            <ChatPanel 
-              mode="txn"
-            />
+          {currentStep === 'discovery' && (
+            <ShadowRulesPanel />
+          )}
+          {currentStep === 'reports' && (
+            <div className="max-w-4xl mx-auto">
+              <ExecutiveReportSection />
+            </div>
           )}
         </div>
 
-        {/* Report Generator Modal */}
-        <ReportGenerator 
-          isOpen={showReportGenerator} 
-          onClose={() => setShowReportGenerator(false)} 
-        />
+
 
         {/* Guidelines Modal */}
-        <GuidelinesInput 
-          isOpen={showGuidelines} 
-          onClose={() => setShowGuidelines(false)} 
+        <GuidelinesInput
+          isOpen={showGuidelines}
+          onClose={() => setShowGuidelines(false)}
         />
       </main>
     </AppContext.Provider>

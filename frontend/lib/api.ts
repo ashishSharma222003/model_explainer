@@ -35,6 +35,235 @@ export interface TxnChatApiResponse {
   compliance_note: string | null;
 }
 
+// Shadow Rules Conversion
+export interface HumanReadableShadowRule {
+  simple_rule: string;
+  original_rule: string;
+  target_decision: string;
+  predicted_outcome: string;
+  key_factors: string[];
+  confidence_level: string;
+  samples_affected: number;
+}
+
+export interface ConvertShadowRulesResponse {
+  success: boolean;
+  rules: HumanReadableShadowRule[];
+  count: number;
+}
+
+export async function convertShadowRules(
+  l1Rules: string[],
+  l2Rules: string[],
+  dataSchema?: any,
+  existingRules?: string[]
+): Promise<ConvertShadowRulesResponse> {
+  const res = await fetch(`${API_URL}/convert-shadow-rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      l1_rules: l1Rules,
+      l2_rules: l2Rules,
+      data_schema: dataSchema,
+      existing_rules: existingRules || []
+    }),
+  });
+  if (!res.ok) throw new Error('Failed to convert shadow rules');
+  return res.json();
+}
+
+// ============ Shadow Rules Semantic Search / Deduplication ============
+
+export interface SimilarShadowRule {
+  rule_id: string;
+  rule_text: string;
+  simple_rule: string;
+  similarity_score: number;
+  source_analysis: string;
+  target_decision: string;
+  predicted_outcome: string;
+  is_duplicate: boolean;
+}
+
+export interface DeduplicationResult {
+  is_duplicate: boolean;
+  similar_rules: SimilarShadowRule[];
+  suggested_action: 'save_new' | 'use_existing' | 'review';
+}
+
+export interface VectorStoreStats {
+  session_id: string;
+  total_rules: number;
+  decision_tree_rules: number;
+  chat_discovered_rules: number;
+  manual_rules: number;
+  index_size: number;
+}
+
+export interface AddRuleToIndexRequest {
+  rule_id: string;
+  rule_text: string;
+  source_analysis: string;
+  simple_rule?: string;
+  target_decision?: string;
+  predicted_outcome?: string;
+  confidence_level?: string;
+  samples_affected?: number;
+}
+
+export async function checkShadowRuleDuplicate(
+  sessionId: string,
+  ruleText: string,
+  threshold: number = 0.95
+): Promise<DeduplicationResult> {
+  const res = await fetch(`${API_URL}/sessions/${sessionId}/shadow-rules/check-duplicate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rule_text: ruleText, threshold }),
+  });
+  if (!res.ok) throw new Error('Failed to check duplicate');
+  return res.json();
+}
+
+export async function addShadowRuleToIndex(
+  sessionId: string,
+  request: AddRuleToIndexRequest
+): Promise<{ success: boolean; message: string }> {
+  const res = await fetch(`${API_URL}/sessions/${sessionId}/shadow-rules/add-to-index`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  if (!res.ok) throw new Error('Failed to add rule to index');
+  return res.json();
+}
+
+export async function addShadowRulesBulk(
+  sessionId: string,
+  rules: AddRuleToIndexRequest[]
+): Promise<{ success: boolean; added_count: number; message: string }> {
+  const res = await fetch(`${API_URL}/sessions/${sessionId}/shadow-rules/add-bulk`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rules }),
+  });
+  if (!res.ok) throw new Error('Failed to add rules in bulk');
+  return res.json();
+}
+
+export async function removeShadowRuleFromIndex(
+  sessionId: string,
+  ruleId: string
+): Promise<{ success: boolean; message: string }> {
+  const res = await fetch(`${API_URL}/sessions/${sessionId}/shadow-rules/remove-from-index/${ruleId}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error('Failed to remove rule from index');
+  return res.json();
+}
+
+export async function clearShadowRulesBySource(
+  sessionId: string,
+  source: 'decision-tree' | 'chat-discovered' | 'manual'
+): Promise<{ success: boolean; deleted_count: number; message: string }> {
+  const res = await fetch(`${API_URL}/sessions/${sessionId}/shadow-rules/clear-by-source/${source}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error('Failed to clear rules by source');
+  return res.json();
+}
+
+export async function searchSimilarShadowRules(
+  sessionId: string,
+  query: string,
+  topK: number = 5,
+  threshold: number = 0.0
+): Promise<{ results: SimilarShadowRule[]; count: number }> {
+  const params = new URLSearchParams({
+    query,
+    top_k: topK.toString(),
+    threshold: threshold.toString(),
+  });
+  const res = await fetch(`${API_URL}/sessions/${sessionId}/shadow-rules/search?${params}`);
+  if (!res.ok) throw new Error('Failed to search similar rules');
+  return res.json();
+}
+
+export async function getShadowRulesStats(
+  sessionId: string
+): Promise<VectorStoreStats> {
+  const res = await fetch(`${API_URL}/sessions/${sessionId}/shadow-rules/stats`);
+  if (!res.ok) throw new Error('Failed to get stats');
+  return res.json();
+}
+
+export async function getAllShadowRulesFromIndex(
+  sessionId: string
+): Promise<{ rules: any[]; count: number }> {
+  const res = await fetch(`${API_URL}/sessions/${sessionId}/shadow-rules/all`);
+  if (!res.ok) throw new Error('Failed to get all rules');
+  return res.json();
+}
+
+export async function rebuildShadowRulesIndex(
+  sessionId: string
+): Promise<{ success: boolean; message: string }> {
+  const res = await fetch(`${API_URL}/sessions/${sessionId}/shadow-rules/rebuild-index`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error('Failed to rebuild index');
+  return res.json();
+}
+
+
+// --- Dedicated Shadow Rule Extraction ---
+
+export interface ExtractedShadowRule {
+  rule_description: string;
+  target_decision: string;
+  predicted_outcome: string;
+  reasoning: string;
+  confidence: string;
+  affected_transactions: number;
+  key_features: string[];
+}
+
+export interface ExtractShadowRulesResponse {
+  success: boolean;
+  shadow_rules: ExtractedShadowRule[];
+  summary: string;
+  transactions_analyzed: number;
+  rules_count: number;
+}
+
+export interface ExtractShadowRulesRequest {
+  session_id: string;
+  selected_transactions: any[];
+  data_schema?: any;
+  decision_tree_rules?: {
+    l1_decision_rules?: string[];
+    l2_decision_rules?: string[];
+    l1_accuracy?: number;
+    l2_accuracy?: number;
+    l1_top_features?: string[];
+    l2_top_features?: string[];
+  };
+  chat_history?: { role: string; content: string }[];
+}
+
+export async function extractShadowRulesFromTransactions(
+  request: ExtractShadowRulesRequest
+): Promise<ExtractShadowRulesResponse> {
+  const res = await fetch(`${API_URL}/extract-shadow-rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  if (!res.ok) throw new Error('Failed to extract shadow rules');
+  return res.json();
+}
+
+
 export async function chat(request: { session_id: string; message: string; context?: any }): Promise<ChatApiResponse> {
   const res = await fetch(`${API_URL}/chat`, {
     method: 'POST',
@@ -311,17 +540,17 @@ export interface CodeExecutionResult {
 }
 
 export async function executeCode(
-  sessionId: string, 
-  code: string, 
+  sessionId: string,
+  code: string,
   timeoutSeconds: number = 30
 ): Promise<CodeExecutionResult> {
   const res = await fetch(`${API_URL}/kernel/execute`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ 
-      session_id: sessionId, 
-      code, 
-      timeout_seconds: timeoutSeconds 
+    body: JSON.stringify({
+      session_id: sessionId,
+      code,
+      timeout_seconds: timeoutSeconds
     }),
   });
   if (!res.ok) throw new Error('Failed to execute code');
@@ -349,17 +578,17 @@ export async function getKernelInfo(sessionId: string): Promise<{ exists: boolea
 }
 
 export async function injectKernelContext(
-  sessionId: string, 
-  mlCode?: string, 
+  sessionId: string,
+  mlCode?: string,
   globalJson?: any
 ): Promise<{ success: boolean }> {
   const res = await fetch(`${API_URL}/kernel/inject-context`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ 
-      session_id: sessionId, 
-      ml_code: mlCode, 
-      global_json: globalJson 
+    body: JSON.stringify({
+      session_id: sessionId,
+      ml_code: mlCode,
+      global_json: globalJson
     }),
   });
   if (!res.ok) throw new Error('Failed to inject context');

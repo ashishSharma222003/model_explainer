@@ -117,6 +117,26 @@ export interface DetectedShadowRule {
   detectedAt: string;
 }
 
+// Shadow rule generated from decision tree analysis
+export interface ShadowRule {
+  id: string;
+  ruleText: string;  // Human-readable rule text
+  decisionPath: string;  // The decision tree path
+  sourceAnalysis: string;  // Which analysis generated this (analysis timestamp/id)
+  targetDecision: 'l1' | 'l2';  // Which decision this rule applies to
+  predictedOutcome: string;  // What the rule predicts (block/release/escalate)
+  confidence: number;  // Confidence score (0-1)
+  samplesAffected: number;  // How many samples match this rule
+  featureConditions: {
+    feature: string;
+    operator: string;
+    value: string | number;
+  }[];
+  isActive: boolean;  // Whether rule is enabled for automation
+  createdAt: string;
+  notes?: string;  // User notes about this rule
+}
+
 export interface Session {
   id: string;
   name: string;
@@ -148,6 +168,8 @@ export interface Session {
   analysisResult?: any;
   // Selected wrong predictions for chat
   selectedWrongPredictions?: any[];
+  // Shadow rules generated from decision tree analysis
+  shadowRules?: ShadowRule[];
 }
 
 const SESSIONS_KEY = 'model_explainer_sessions';

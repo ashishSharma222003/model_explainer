@@ -36,12 +36,21 @@ class ReportSection(BaseModel):
 
 class GeneratedReport(BaseModel):
     """Structured report output from LLM."""
-    title: str = Field(..., description="Report title")
-    executive_summary: str = Field(..., description="2-3 sentence non-technical summary")
-    key_findings: List[str] = Field(..., description="Bullet points of main findings")
-    risk_assessment: Optional[str] = Field(None, description="Any risks or concerns identified")
-    recommendations: List[str] = Field(..., description="Actionable next steps")
-    technical_details: Optional[str] = Field(None, description="Technical analysis for developer reports")
+    title: str = Field(..., description="Report title - should be impactful and business-focused")
+    executive_summary: str = Field(..., description="2-3 sentence executive summary for board presentation")
+    key_findings: List[str] = Field(..., description="Bullet points of main business findings with impact estimates")
+    
+    # Business Impact Section
+    shadow_rules_impact: Optional[List[str]] = Field(None, description="Shadow rules/hidden patterns causing losses or inefficiencies")
+    improvement_opportunities: Optional[List[str]] = Field(None, description="Opportunities to improve fraud capture or reduce false positives with estimated impact")
+    
+    # Risk and Compliance
+    risk_assessment: Optional[str] = Field(None, description="Business risks and concerns identified - focus on financial and reputational impact")
+    analyst_insights: Optional[List[str]] = Field(None, description="Insights about decision-making patterns without blaming individuals")
+    
+    # Recommendations
+    recommendations: List[str] = Field(..., description="Prioritized, actionable strategic recommendations with expected outcomes")
+    technical_details: Optional[str] = Field(None, description="Technical analysis for developer reports only")
 
 
 class AnalystBehaviorReport(BaseModel):
@@ -220,25 +229,54 @@ Based on the provided context, generate a structured report.
 IMPORTANT: This report is for business stakeholders. Do NOT include any code, technical implementation details, or programming-related content unless explicitly a technical report."""
 
         if report_type == ReportType.EXECUTIVE:
-            return base_prompt + """
+            return """You are a senior business consultant preparing an executive briefing for bank leadership.
 
-TARGET AUDIENCE: Executives, Board Members, Senior Management
-TONE: Clear, concise, business-focused, easy to understand
-FOCUS ON:
-- What the model does and how well it performs
-- Key risk factors the model identifies
-- Business impact and operational implications
-- High-level concerns or areas needing attention
-- Clear, actionable recommendations
+Generate a CLEAN, PROFESSIONAL executive report based on the fraud detection analysis findings.
 
-AVOID:
-- Technical jargon, code, or implementation details
-- Statistical formulas or ML terminology
-- Feature names without plain English explanations
-- Anything that requires technical background to understand
+CRITICAL RULES - FOLLOW EXACTLY:
+1. ABSOLUTELY NO CODE - not a single line of code, variable names, or technical syntax
+2. NO TECHNICAL JARGON - no ML terms, no "features", no "model", no "algorithm"
+3. NO DATA FIELD NAMES - translate column names to plain English descriptions
+4. NO JSON, NO MARKDOWN CODE BLOCKS - this is a business document, not a technical doc
+5. Write in COMPLETE SENTENCES with proper narrative flow
+6. Use BUSINESS LANGUAGE that a CEO would understand
 
-Keep the executive summary under 3 sentences.
-Write as if explaining to someone unfamiliar with machine learning."""
+STRUCTURE (keep it clean and scannable):
+
+EXECUTIVE SUMMARY:
+Write 2-3 impactful sentences summarizing the key finding. Make it headline-worthy.
+
+KEY FINDINGS:
+- Each finding should be a complete, clear business statement
+- Focus on WHAT matters to the business and WHY
+- Include estimated impact where possible (percentages, potential savings)
+- Maximum 5-6 key findings
+
+AREAS OF CONCERN:
+- Decision patterns that may be causing financial losses
+- Inconsistencies in how similar cases are handled
+- Potential blind spots in fraud detection
+- Write each as a clear business concern, not a technical observation
+
+OPPORTUNITIES FOR IMPROVEMENT:
+- Specific, actionable opportunities to improve performance
+- Estimate potential business value for each
+- Focus on outcomes, not technical changes
+
+STRATEGIC RECOMMENDATIONS:
+- Prioritized action items (numbered 1, 2, 3)
+- Each recommendation should be actionable and specific
+- Include expected outcome for each
+
+WRITING STYLE:
+- Professional, confident, authoritative
+- Use terms like "decision accuracy", "operational efficiency", "risk exposure"
+- Refer to "decision patterns" not "shadow rules"
+- Say "review process" not "model"
+- Say "high-value transactions" not "amount > 10000"
+- Frame everything as business opportunity or risk
+
+This report will be reviewed by the bank's CEO and board members."""
 
         elif report_type == ReportType.TECHNICAL:
             return base_prompt + """
@@ -355,6 +393,52 @@ Write in clear business language that operations staff can understand and act up
         if all_messages and request.include_chat_history:
             chat_summary = self._summarize_chat(all_messages)
             context_parts.append(f"## Conversation Summary\n{chat_summary}")
+        
+        # Add decision tree context for executive reports (L1 and L2 analyst rules)
+        analysis_result = session_data.get('analysisResult')
+        if analysis_result and request.report_type == ReportType.EXECUTIVE:
+            decision_context = []
+            
+            # L1 Decision Analysis
+            l1_rules = analysis_result.get('l1_decision_rules', [])
+            l1_analysis = analysis_result.get('l1_analysis', {})
+            if l1_rules or l1_analysis:
+                decision_context.append("### L1 Analyst Decision Patterns")
+                if l1_analysis.get('metrics'):
+                    metrics = l1_analysis['metrics']
+                    decision_context.append(f"- Decision accuracy: {metrics.get('accuracy', 0)*100:.1f}%")
+                    decision_context.append(f"- True positives (fraud caught): {metrics.get('true_positives', 0)}")
+                    decision_context.append(f"- False positives (unnecessary blocks): {metrics.get('false_positives', 0)}")
+                    decision_context.append(f"- False negatives (missed fraud): {metrics.get('false_negatives', 0)}")
+                if l1_rules:
+                    decision_context.append(f"- Number of decision patterns identified: {len(l1_rules)}")
+            
+            # L2 Decision Analysis
+            l2_rules = analysis_result.get('l2_decision_rules', [])
+            l2_analysis = analysis_result.get('l2_analysis', {})
+            if l2_rules or l2_analysis:
+                decision_context.append("\n### L2 Analyst Decision Patterns")
+                if l2_analysis.get('metrics'):
+                    metrics = l2_analysis['metrics']
+                    decision_context.append(f"- Decision accuracy: {metrics.get('accuracy', 0)*100:.1f}%")
+                    decision_context.append(f"- True positives (fraud caught): {metrics.get('true_positives', 0)}")
+                    decision_context.append(f"- False positives (unnecessary blocks): {metrics.get('false_positives', 0)}")
+                    decision_context.append(f"- False negatives (missed fraud): {metrics.get('false_negatives', 0)}")
+                if l2_rules:
+                    decision_context.append(f"- Number of decision patterns identified: {len(l2_rules)}")
+            
+            # Wrong predictions summary
+            wrong_predictions = analysis_result.get('wrong_predictions', [])
+            if wrong_predictions:
+                fp_count = len([p for p in wrong_predictions if p.get('case_type') == 'false_positive'])
+                fn_count = len([p for p in wrong_predictions if p.get('case_type') == 'false_negative'])
+                decision_context.append(f"\n### Prediction Discrepancies")
+                decision_context.append(f"- Cases where analyst disagreed with expected outcome: {len(wrong_predictions)}")
+                decision_context.append(f"- Over-cautious decisions (blocked non-fraud): {fp_count}")
+                decision_context.append(f"- Missed opportunities (released fraud): {fn_count}")
+            
+            if decision_context:
+                context_parts.append("## Decision Tree Analysis\n" + "\n".join(decision_context))
         
         context_text = "\n\n".join(context_parts) if context_parts else "Limited context available."
         
@@ -661,48 +745,128 @@ Generate a comprehensive shadow report."""
         session_data: Dict, 
         request: ReportRequest
     ) -> Dict[str, Any]:
-        """Format report as Markdown."""
+        """Format report as Markdown with proper spacing and readability."""
         
         md_parts = []
         
-        # Header
+        # ═══════════════════════════════════════════════════════════════
+        # REPORT HEADER
+        # ═══════════════════════════════════════════════════════════════
         md_parts.append(f"# {report.title}")
-        md_parts.append(f"\n*Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
-        md_parts.append(f"*Report Type: {request.report_type.value.title()}*\n")
+        md_parts.append("")
+        md_parts.append(f"**Report Date:** {datetime.now().strftime('%B %d, %Y')}")
+        md_parts.append("")
+        md_parts.append("---")
+        md_parts.append("")
+        md_parts.append("")
         
-        # Executive Summary
+        # ═══════════════════════════════════════════════════════════════
+        # EXECUTIVE SUMMARY
+        # ═══════════════════════════════════════════════════════════════
         md_parts.append("## Executive Summary")
+        md_parts.append("")
         md_parts.append(report.executive_summary)
         md_parts.append("")
-        
-        # Key Findings
-        md_parts.append("## Key Findings")
-        for finding in report.key_findings:
-            md_parts.append(f"- {finding}")
+        md_parts.append("")
         md_parts.append("")
         
-        # Risk Assessment
+        # ═══════════════════════════════════════════════════════════════
+        # KEY FINDINGS
+        # ═══════════════════════════════════════════════════════════════
+        if report.key_findings:
+            md_parts.append("## Key Findings")
+            md_parts.append("")
+            for i, finding in enumerate(report.key_findings, 1):
+                md_parts.append(f"**{i}.** {finding}")
+                md_parts.append("")
+            md_parts.append("")
+            md_parts.append("")
+        
+        # ═══════════════════════════════════════════════════════════════
+        # AREAS OF CONCERN (Executive reports only)
+        # ═══════════════════════════════════════════════════════════════
+        if report.shadow_rules_impact and request.report_type == ReportType.EXECUTIVE:
+            md_parts.append("## Areas of Concern")
+            md_parts.append("")
+            for impact in report.shadow_rules_impact:
+                md_parts.append(f"• {impact}")
+                md_parts.append("")
+            md_parts.append("")
+            md_parts.append("")
+        
+        # ═══════════════════════════════════════════════════════════════
+        # DECISION-MAKING INSIGHTS (Executive reports only)
+        # ═══════════════════════════════════════════════════════════════
+        if report.analyst_insights and request.report_type == ReportType.EXECUTIVE:
+            md_parts.append("## Decision-Making Insights")
+            md_parts.append("")
+            for insight in report.analyst_insights:
+                md_parts.append(f"• {insight}")
+                md_parts.append("")
+            md_parts.append("")
+            md_parts.append("")
+        
+        # ═══════════════════════════════════════════════════════════════
+        # OPPORTUNITIES FOR IMPROVEMENT (Executive reports only)
+        # ═══════════════════════════════════════════════════════════════
+        if report.improvement_opportunities and request.report_type == ReportType.EXECUTIVE:
+            md_parts.append("## Opportunities for Improvement")
+            md_parts.append("")
+            for opportunity in report.improvement_opportunities:
+                md_parts.append(f"• {opportunity}")
+                md_parts.append("")
+            md_parts.append("")
+            md_parts.append("")
+        
+        # ═══════════════════════════════════════════════════════════════
+        # RISK ASSESSMENT
+        # ═══════════════════════════════════════════════════════════════
         if report.risk_assessment:
             md_parts.append("## Risk Assessment")
+            md_parts.append("")
             md_parts.append(report.risk_assessment)
             md_parts.append("")
-        
-        # Recommendations
-        md_parts.append("## Recommendations")
-        for i, rec in enumerate(report.recommendations, 1):
-            md_parts.append(f"{i}. {rec}")
-        md_parts.append("")
-        
-        # Technical Details (for technical reports)
-        if report.technical_details and request.report_type == ReportType.TECHNICAL:
-            md_parts.append("## Technical Details")
-            md_parts.append(report.technical_details)
+            md_parts.append("")
             md_parts.append("")
         
-        # Appendix with raw data if requested
-        if request.include_json_data and session_data.get('globalJson'):
-            md_parts.append("## Appendix: Model Data")
-            md_parts.append("### Global Explanation JSON")
+        # ═══════════════════════════════════════════════════════════════
+        # STRATEGIC RECOMMENDATIONS
+        # ═══════════════════════════════════════════════════════════════
+        if report.recommendations:
+            md_parts.append("## Strategic Recommendations")
+            md_parts.append("")
+            for i, rec in enumerate(report.recommendations, 1):
+                md_parts.append(f"**Recommendation {i}:**")
+                md_parts.append("")
+                md_parts.append(f"{rec}")
+                md_parts.append("")
+                md_parts.append("")
+        
+        # ═══════════════════════════════════════════════════════════════
+        # TECHNICAL DETAILS (Technical reports only)
+        # ═══════════════════════════════════════════════════════════════
+        if report.technical_details and request.report_type == ReportType.TECHNICAL:
+            md_parts.append("## Technical Details")
+            md_parts.append("")
+            md_parts.append(report.technical_details)
+            md_parts.append("")
+            md_parts.append("")
+        
+        # ═══════════════════════════════════════════════════════════════
+        # FOOTER
+        # ═══════════════════════════════════════════════════════════════
+        md_parts.append("---")
+        md_parts.append("")
+        md_parts.append("*This report is confidential and intended for internal use only.*")
+        md_parts.append("")
+        md_parts.append(f"*Generated for: {session_data.get('name', 'Analysis Session')}*")
+        
+        # Appendix ONLY for technical reports, never for executive
+        if request.report_type == ReportType.TECHNICAL and request.include_json_data and session_data.get('globalJson'):
+            md_parts.append("")
+            md_parts.append("")
+            md_parts.append("## Appendix: Technical Data")
+            md_parts.append("")
             md_parts.append(f"```json\n{json.dumps(session_data['globalJson'], indent=2)}\n```")
         
         content = "\n".join(md_parts)
@@ -710,7 +874,7 @@ Generate a comprehensive shadow report."""
         return {
             "format": "markdown",
             "content": content,
-            "filename": f"report_{request.report_type.value}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+            "filename": f"Executive_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
             "title": report.title
         }
 

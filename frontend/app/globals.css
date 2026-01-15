@@ -60,26 +60,35 @@ textarea:focus::placeholder {
 
 /* Animation keyframes */
 @keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 @keyframes slideUp {
-  from { 
+  from {
     opacity: 0;
     transform: translateY(10px);
   }
-  to { 
+
+  to {
     opacity: 1;
     transform: translateY(0);
   }
 }
 
 @keyframes pulse-glow {
-  0%, 100% { 
+
+  0%,
+  100% {
     box-shadow: 0 0 20px rgba(56, 189, 248, 0.1);
   }
-  50% { 
+
+  50% {
     box-shadow: 0 0 30px rgba(56, 189, 248, 0.2);
   }
 }
@@ -134,4 +143,64 @@ button:focus-visible {
   border-radius: 0.5rem;
   padding: 1rem;
   overflow-x: auto;
+}
+
+/* Markdown Report Styling */
+.markdown-report h1 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: white;
+  margin-bottom: 1.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid rgba(71, 85, 105, 0.5);
+}
+
+.markdown-report h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #22d3ee;
+  margin-top: 2rem;
+  margin-bottom: 1rem;
+}
+
+.markdown-report p {
+  color: #cbd5e1;
+  line-height: 1.75;
+  margin-bottom: 1rem;
+}
+
+.markdown-report strong {
+  color: white;
+  font-weight: 600;
+}
+
+.markdown-report em {
+  color: #94a3b8;
+  font-style: italic;
+}
+
+.markdown-report ul,
+.markdown-report ol {
+  margin: 1rem 0;
+  padding-left: 1.5rem;
+}
+
+.markdown-report li {
+  color: #cbd5e1;
+  line-height: 1.75;
+  margin-bottom: 0.5rem;
+}
+
+.markdown-report ul li {
+  list-style-type: disc;
+}
+
+.markdown-report ol li {
+  list-style-type: decimal;
+}
+
+.markdown-report hr {
+  border: none;
+  border-top: 1px solid rgba(71, 85, 105, 0.5);
+  margin: 2rem 0;
 }
