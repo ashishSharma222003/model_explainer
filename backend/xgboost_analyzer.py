@@ -71,6 +71,16 @@ class DecisionPath(BaseModel):
     confidence: float
 
 
+class GeneralPurposeRule(BaseModel):
+    """A Simplified, human-readable rule for general understanding."""
+    original_rule: str
+    description: str
+    target: str  # "Fraud" or "Legit"
+    accuracy: float
+    coverage: float
+    confidence: str
+
+
 class AnalysisResult(BaseModel):
     """Result of XGBoost analysis on analyst decisions."""
     success: bool
@@ -114,6 +124,25 @@ class AnalysisResult(BaseModel):
     l1_tree_structure: Optional[List[Dict[str, Any]]] = None
     l2_tree_structure: Optional[List[Dict[str, Any]]] = None
     
+    # === NEW: Segment Analysis (RF Leaf-based patterns) ===
+    # Combined target distribution (block_1, block_0, release_1, etc.)
+    combined_target_distribution: Optional[Dict[str, int]] = None
+    
+    # All segment analysis results
+    segment_analysis: Optional[List[Dict[str, Any]]] = None
+    
+    # Top segments with high false positive rates
+    top_fp_segments: Optional[List[Dict[str, Any]]] = None
+    
+    # Top segments with high false negative rates
+    top_fn_segments: Optional[List[Dict[str, Any]]] = None
+    
+    # Summary of segment patterns for LLM/reports
+    segment_summary: Optional[str] = None
+    
+    # === NEW: General Purpose Rules ===
+    general_purpose_rules: Optional[List[GeneralPurposeRule]] = None
+    
     analyzed_at: str = ""
 
 
@@ -127,6 +156,33 @@ class RandomForestAnalyzer:
         self.l2_model = None
         self.feature_names: List[str] = []
         self.hyperparams: RandomForestHyperparameters = RandomForestHyperparameters()
+    
+    def get_best_segments(self, segments: List[Dict[str, Any]], n: int = 10) -> List[Dict[str, Any]]:
+        """Filter and return the top N most interesting segments."""
+        if not segments:
+            return []
+            
+        # Score segments by (Accuracy * log(Samples)) to balance precision and coverage
+        # Focus on high confidence rules
+        scored_segments = []
+        for seg in segments:
+            # We want rules that are highly predictive of either class
+            validity = seg.get('accuracy', 0)
+            n_samples = seg.get('n_samples', 0)
+            
+            # Skip very small segments
+            if n_samples < 5:
+                continue
+                
+            # Score
+            score = validity * np.log1p(n_samples)
+            scored_segments.append((score, seg))
+            
+        # Sort desc
+        scored_segments.sort(key=lambda x: x[0], reverse=True)
+        
+        # Return top N
+        return [s[1] for s in scored_segments[:n]]
     
     def set_hyperparameters(self, params: Dict[str, Any]) -> None:
         """Update hyperparameters for the Random Forest model."""
@@ -543,6 +599,274 @@ class RandomForestAnalyzer:
         
         return X, y, feature_cols
     
+    # =========================================================================
+    # NEW: Segment Analysis Methods for RF Pattern Discovery
+    # =========================================================================
+    
+    def _create_combined_target(
+        self, 
+        df: pd.DataFrame, 
+        l1_col: str, 
+        fraud_col: str
+    ) -> pd.Series:
+        """
+        Create combined target: L1_decision + fraud_flag
+        Results in up to 8 classes: block_1, block_0, release_1, release_0, etc.
+        """
+        # Normalize L1 decisions
+        l1_normalized = df[l1_col].astype(str).str.lower().str.strip()
+        
+        # Normalize fraud flags to 0/1
+        fraud_values = df[fraud_col].astype(str).str.lower().str.strip()
+        fraud_binary = fraud_values.isin(['true', '1', '1.0', 'yes', 'fraud', 'positive']).astype(int)
+        
+        # Create combined target
+        combined = l1_normalized + "_" + fraud_binary.astype(str)
+        
+        return combined
+    
+    def _extract_leaf_segments(
+        self,
+        model: RandomForestClassifier,
+        X: pd.DataFrame,
+        df_original: pd.DataFrame,
+        l1_col: str,
+        fraud_col: str,
+        feature_names: List[str],
+        max_segments: int = 500  # Increased to allow more segments
+    ) -> List[Dict[str, Any]]:
+        """
+        Extract leaf segments using rf.apply() and compute metrics per segment.
+        
+        Each segment is a group of transactions that followed the same path
+        through a specific tree (identified by tree_id + leaf_id).
+        """
+        try:
+            # Get leaf node IDs for all samples in all trees
+            # Shape: (n_samples, n_trees)
+            leaf_ids = model.apply(X)
+            
+            # Get tree count
+            n_trees = leaf_ids.shape[1]
+            logger.info(f"Extracting segments from {n_trees} trees")
+            
+            # Prepare normalized columns for metrics
+            l1_normalized = df_original[l1_col].astype(str).str.lower().str.strip()
+            fraud_values = df_original[fraud_col].astype(str).str.lower().str.strip()
+            fraud_binary = fraud_values.isin(['true', '1', '1.0', 'yes', 'fraud', 'positive'])
+            
+            all_segments = []
+            
+            # Analyze more trees for comprehensive coverage
+            trees_to_analyze = min(25, n_trees)  # Analyze 25 trees for better coverage
+            
+            for tree_idx in range(trees_to_analyze):
+                # Get unique leaf IDs in this tree
+                unique_leaves = np.unique(leaf_ids[:, tree_idx])
+                
+                for leaf_id in unique_leaves:
+                    # Get mask for this segment
+                    mask = leaf_ids[:, tree_idx] == leaf_id
+                    segment_size = mask.sum()
+                    
+                    # Skip very small segments
+                    if segment_size < 5:
+                        continue
+                    
+                    # Get segment data
+                    segment_l1 = l1_normalized[mask]
+                    segment_fraud = fraud_binary[mask]
+                    
+                    # Compute TP/FP/TN/FN
+                    metrics = self._compute_segment_metrics(segment_l1, segment_fraud)
+                    
+                    # Get combined target distribution
+                    combined = segment_l1 + "_" + segment_fraud.astype(int).astype(str)
+                    class_dist = combined.value_counts().to_dict()
+                    
+                    # Determine dominant L1 decision
+                    dominant_decision = segment_l1.value_counts().idxmax() if len(segment_l1) > 0 else 'unknown'
+                    
+                    # Calculate fraud rate in segment
+                    fraud_rate = segment_fraud.sum() / len(segment_fraud) if len(segment_fraud) > 0 else 0
+                    
+                    # Extract rule text for this segment (approximation)
+                    rule_text = self._extract_rule_for_leaf(
+                        model.estimators_[tree_idx], 
+                        feature_names, 
+                        leaf_id
+                    )
+                    
+                    segment = {
+                        'segment_id': f"tree_{tree_idx}_leaf_{leaf_id}",
+                        'tree_id': tree_idx,
+                        'leaf_id': int(leaf_id),
+                        'transaction_count': int(segment_size),
+                        'class_distribution': class_dist,
+                        'TP': metrics['TP'],
+                        'FP': metrics['FP'],
+                        'TN': metrics['TN'],
+                        'FN': metrics['FN'],
+                        'accuracy': metrics['accuracy'],
+                        'precision': metrics['precision'],
+                        'recall': metrics['recall'],
+                        'fraud_rate': round(fraud_rate, 4),
+                        'dominant_l1_decision': dominant_decision,
+                        'rule_text': rule_text,
+                        'fp_rate': metrics['fp_rate'],
+                        'fn_rate': metrics['fn_rate']
+                    }
+                    
+                    all_segments.append(segment)
+            
+            # Sort by transaction count (most impactful first)
+            all_segments.sort(key=lambda x: x['transaction_count'], reverse=True)
+            
+            logger.info(f"Extracted {len(all_segments)} segments")
+            return all_segments[:max_segments]
+            
+        except Exception as e:
+            logger.error(f"Error extracting leaf segments: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+    
+    def _compute_segment_metrics(
+        self, 
+        l1_decisions: pd.Series, 
+        fraud_flags: pd.Series
+    ) -> Dict[str, Any]:
+        """
+        Compute TP/FP/TN/FN for a segment.
+        
+        Binary interpretation:
+        - block = predicted fraud
+        - release = predicted not fraud
+        - verify/escalate = excluded from binary metrics
+        """
+        # Binary decisions only
+        is_block = l1_decisions.isin(['block', 'blocked'])
+        is_release = l1_decisions.isin(['release', 'released'])
+        is_fraud = fraud_flags
+        
+        # Calculate metrics
+        TP = int(((is_block) & (is_fraud)).sum())  # Block + Was fraud = Correct
+        FP = int(((is_block) & (~is_fraud)).sum())  # Block + Was legit = Wrong
+        TN = int(((is_release) & (~is_fraud)).sum())  # Release + Was legit = Correct
+        FN = int(((is_release) & (is_fraud)).sum())  # Release + Was fraud = Wrong
+        
+        # Binary total (excluding verify/escalate)
+        binary_total = TP + FP + TN + FN
+        
+        # Derived metrics
+        accuracy = (TP + TN) / binary_total if binary_total > 0 else 0
+        precision = TP / (TP + FP) if (TP + FP) > 0 else 0
+        recall = TP / (TP + FN) if (TP + FN) > 0 else 0
+        fp_rate = FP / (FP + TN) if (FP + TN) > 0 else 0
+        fn_rate = FN / (FN + TP) if (FN + TP) > 0 else 0
+        
+        return {
+            'TP': TP,
+            'FP': FP,
+            'TN': TN,
+            'FN': FN,
+            'accuracy': round(accuracy, 4),
+            'precision': round(precision, 4),
+            'recall': round(recall, 4),
+            'fp_rate': round(fp_rate, 4),
+            'fn_rate': round(fn_rate, 4)
+        }
+    
+    def _extract_rule_for_leaf(
+        self,
+        tree: DecisionTreeClassifier,
+        feature_names: List[str],
+        target_leaf_id: int
+    ) -> str:
+        """
+        Extract the decision path (rule) that leads to a specific leaf node.
+        """
+        try:
+            tree_ = tree.tree_
+            feature_name = [
+                feature_names[i] if i != -2 and i < len(feature_names) else "?"
+                for i in tree_.feature
+            ]
+            
+            # Find path to target leaf
+            path = []
+            
+            def find_path(node, current_path):
+                if node == target_leaf_id:
+                    return current_path
+                
+                if tree_.feature[node] == -2:  # Leaf node
+                    return None
+                
+                # Check left child
+                left_result = find_path(
+                    tree_.children_left[node],
+                    current_path + [(feature_name[node], "<=", tree_.threshold[node])]
+                )
+                if left_result is not None:
+                    return left_result
+                
+                # Check right child
+                right_result = find_path(
+                    tree_.children_right[node],
+                    current_path + [(feature_name[node], ">", tree_.threshold[node])]
+                )
+                return right_result
+            
+            path = find_path(0, [])
+            
+            if path:
+                # Format as readable rule
+                conditions = [f"{feat} {op} {thresh:.2f}" for feat, op, thresh in path]
+                return " AND ".join(conditions)
+            else:
+                return "Complex path"
+                
+        except Exception as e:
+            logger.error(f"Error extracting rule for leaf: {e}")
+            return "Error extracting rule"
+    
+    def _generate_segment_summary(self, segments: List[Dict[str, Any]]) -> str:
+        """Generate a text summary of segment patterns for reports/LLM."""
+        if not segments:
+            return "No segments analyzed."
+        
+        # Calculate totals
+        total_txn = sum(s['transaction_count'] for s in segments)
+        total_fp = sum(s['FP'] for s in segments)
+        total_fn = sum(s['FN'] for s in segments)
+        
+        # Find problem segments
+        high_fp_segments = [s for s in segments if s['fp_rate'] > 0.3 and s['transaction_count'] >= 10]
+        high_fn_segments = [s for s in segments if s['fn_rate'] > 0.3 and s['transaction_count'] >= 10]
+        
+        summary_lines = [
+            f"Analyzed {len(segments)} decision segments covering {total_txn} transactions.",
+            f"Total False Positives: {total_fp}, Total False Negatives: {total_fn}",
+            "",
+            f"High False Positive Segments ({len(high_fp_segments)}):"
+        ]
+        
+        for seg in high_fp_segments[:5]:
+            summary_lines.append(
+                f"  - {seg['segment_id']}: FP rate {seg['fp_rate']:.0%}, "
+                f"{seg['transaction_count']} txns, Rule: {seg['rule_text'][:80]}..."
+            )
+        
+        summary_lines.append(f"\nHigh False Negative Segments ({len(high_fn_segments)}):")
+        for seg in high_fn_segments[:5]:
+            summary_lines.append(
+                f"  - {seg['segment_id']}: FN rate {seg['fn_rate']:.0%}, "
+                f"{seg['transaction_count']} txns, Rule: {seg['rule_text'][:80]}..."
+            )
+        
+        return "\n".join(summary_lines)
+    
     def _calculate_confusion_metrics(
         self, 
         y_true: pd.Series, 
@@ -913,6 +1237,56 @@ class RandomForestAnalyzer:
             result.l1_tree_structure = l1_tree_structure
             result.l1_decision_rules = l1_decision_rules
             result.l1_tree_text = l1_tree_text
+            
+            # ===================================================================
+            # NEW: Segment Analysis - Extract leaf segments with TP/FP/TN/FN
+            # ===================================================================
+            logger.info("Starting segment analysis...")
+            
+            # Create combined target distribution
+            combined_target = self._create_combined_target(df, l1_col, true_fraud_col)
+            combined_dist = combined_target.value_counts().to_dict()
+            result.combined_target_distribution = combined_dist
+            logger.info(f"Combined target distribution: {combined_dist}")
+            
+            # Extract leaf segments from RF model (using full dataset)
+            # Need to preprocess full dataset for apply()
+            X_full, _, _ = self._preprocess_data(df.copy(), l1_col, l1_exclude_cols)
+            
+            segments = self._extract_leaf_segments(
+                model=self.l1_model,
+                X=X_full,
+                df_original=df,
+                l1_col=l1_col,
+                fraud_col=true_fraud_col,
+                feature_names=feature_names,
+                max_segments=50
+            )
+            
+            result.segment_analysis = segments
+            
+            # Identify top FP and FN segments
+            if segments:
+                # Sort by FP rate (descending) and filter significant ones
+                result.top_fp_segments = sorted(
+                    [s for s in segments if s['FP'] > 0 and s['transaction_count'] >= 10],
+                    key=lambda x: x['fp_rate'],
+                    reverse=True
+                )[:10]
+                
+                # Sort by FN rate (descending) and filter significant ones
+                result.top_fn_segments = sorted(
+                    [s for s in segments if s['FN'] > 0 and s['transaction_count'] >= 10],
+                    key=lambda x: x['fn_rate'],
+                    reverse=True
+                )[:10]
+                
+                # Generate summary
+                result.segment_summary = self._generate_segment_summary(segments)
+                logger.info(f"Segment analysis complete: {len(segments)} segments, "
+                           f"{len(result.top_fp_segments)} high-FP, {len(result.top_fn_segments)} high-FN")
+            
+            # ===================================================================
             
             # Analyze L2 Decisions if available
             if l2_col and l2_col in df.columns:

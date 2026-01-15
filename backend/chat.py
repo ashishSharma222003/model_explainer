@@ -1,6 +1,7 @@
 import os
 import json
 from typing import Dict, List, Any
+from pydantic import BaseModel
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, BaseMessage
 from langchain_community.chat_message_histories import ChatMessageHistory
@@ -8,6 +9,7 @@ from models import (
     ExplainGlobalRequest, ExplainTransactionRequest, ChatResponse, TxnChatResponse,
     HumanReadableShadowRule, ShadowRulesConversionResponse, ExtractShadowRulesFromTxnResponse
 )
+from xgboost_analyzer import GeneralPurposeRule
 import logging
 
 # Configure logging
@@ -595,6 +597,135 @@ Format suggestions as brief, specific code improvements."""
         self.save_history()
 
         return response
+
+    class GeneralRulesResponse(BaseModel):
+        rules: List[GeneralPurposeRule]
+
+    async def generate_general_rules_from_segments(
+        self,
+        session_id: str,
+        segments: List[Dict[str, Any]],
+        data_schema: Dict[str, Any],
+        analysis_result: Dict[str, Any] = None
+    ) -> List[GeneralPurposeRule]:
+        """
+        Convert technical decision tree segments into human-readable general purpose rules.
+        Uses comprehensive context from Random Forest analysis for richer insights.
+        """
+        history = self.get_session_history(session_id)
+        
+        # Prepare context
+        segments_preview = json.dumps(segments[:15], indent=2)  # Limit context
+        schema_preview = json.dumps(data_schema, indent=2) if data_schema else "Not provided"
+        
+        # Extract key insights from analysis result
+        analysis_context = ""
+        if analysis_result:
+            # L1 Analysis insights
+            if analysis_result.get('l1_analysis'):
+                l1 = analysis_result['l1_analysis']
+                feature_imp = l1.get('feature_importance', {})
+                top_features = sorted(feature_imp.items(), key=lambda x: x[1], reverse=True)[:5]
+                
+                analysis_context += f"\n\n=== L1 ANALYST DECISION ANALYSIS ===\n"
+                analysis_context += f"Accuracy: {l1.get('metrics', {}).get('accuracy', 0):.1%}\n"
+                analysis_context += f"Top 5 Most Important Features:\n"
+                for feat, importance in top_features:
+                    analysis_context += f"  - {feat}: {importance:.3f}\n"
+            
+            # L2 Analysis insights
+            if analysis_result.get('l2_analysis'):
+                l2 = analysis_result['l2_analysis']
+                feature_imp = l2.get('feature_importance', {})
+                top_features = sorted(feature_imp.items(), key=lambda x: x[1], reverse=True)[:5]
+                
+                analysis_context += f"\n=== L2 ANALYST DECISION ANALYSIS ===\n"
+                analysis_context += f"Accuracy: {l2.get('metrics', {}).get('accuracy', 0):.1%}\n"
+                analysis_context += f"Top 5 Most Important Features:\n"
+                for feat, importance in top_features:
+                    analysis_context += f"  - {feat}: {importance:.3f}\n"
+            
+            # Prediction breakdown
+            if analysis_result.get('prediction_breakdown'):
+                breakdown = analysis_result['prediction_breakdown']
+                analysis_context += f"\n=== PREDICTION ACCURACY ===\n"
+                analysis_context += f"Total Cases: {breakdown.get('total_cases', 0)}\n"
+                analysis_context += f"False Positives: {breakdown.get('false_positives', 0)}\n"
+                analysis_context += f"False Negatives: {breakdown.get('false_negatives', 0)}\n"
+                analysis_context += f"Overall Accuracy: {breakdown.get('accuracy_rate', 0):.1%}\n"
+            
+            # Decision tree rules summary
+            l1_rules_count = len(analysis_result.get('l1_decision_rules', []))
+            l2_rules_count = len(analysis_result.get('l2_decision_rules', []))
+            if l1_rules_count > 0 or l2_rules_count > 0:
+                analysis_context += f"\n=== DECISION TREE RULES AVAILABLE ===\n"
+                analysis_context += f"L1 Rules: {l1_rules_count}\n"
+                analysis_context += f"L2 Rules: {l2_rules_count}\n"
+        
+        system_content = """You are an expert Business Intelligence Analyst specializing in fraud detection and ML model interpretation.
+
+Your task is to synthesize insights from Random Forest analysis and translate technical decision patterns into ACTIONABLE, BUSINESS-FRIENDLY shadow rules.
+
+CONTEXT PROVIDED:
+1. **Technical Segments**: Decision tree leaf patterns with metrics (accuracy, coverage, class distribution)
+2. **Data Schema**: Feature definitions and column meanings
+3. **Random Forest Analysis**: Feature importance, accuracy metrics, top influencing factors
+4. **Prediction Breakdown**: False positives, false negatives, overall performance
+
+YOUR MISSION:
+Generate shadow rules that:
+1. **Explain WHY decisions happen** - reference the most important features from Random Forest analysis
+2. **Use business language** - no technical jargon (e.g., "High-value transactions" instead of "Amount > 500")
+3. **Show patterns clearly** - identify common scenarios that lead to fraud/legit classifications
+4. **Are actionable** - stakeholders should understand what triggers these rules
+5. **Avoid duplicates** - consolidate similar patterns into single, clear rules
+6. **Prioritize accuracy** - focus on rules with high confidence and good coverage
+
+RULE QUALITY REQUIREMENTS:
+- **original_rule**: Keep the exact technical condition from the segment (for reference)
+- **description**: 1-2 sentence business explanation that a non-technical executive can understand
+- **target**: "Fraud" or "Legit" - what this rule predicts
+- **accuracy**: Use the segment's accuracy metric (0.0 to 1.0)
+- **coverage**: Use the segment's sample coverage as percentage (0.0 to 100.0)
+- **confidence**: "high" (accuracy > 0.9), "medium" (0.75-0.9), or "low" (< 0.75)
+
+EXAMPLES OF GOOD DESCRIPTIONS:
+❌ BAD: "When feature_X <= 0.5 and feature_Y > 100"
+✅ GOOD: "Small transactions from new customers during business hours are typically legitimate"
+
+❌ BAD: "High velocity_score correlates with fraud"
+✅ GOOD: "Customers making multiple rapid transactions in a short time period are flagged as fraud"
+
+OUTPUT:
+Generate 5-15 high-quality rules that capture the most important patterns discovered in the data."""
+
+        # Build comprehensive prompt
+        prompt_parts = [
+            "Here is the comprehensive analysis context:\n",
+            analysis_context,
+            "\n\n=== DATA SCHEMA ===\n",
+            schema_preview,
+            "\n\n=== TOP DECISION PATTERNS (SEGMENTS) ===\n",
+            segments_preview,
+            "\n\nUsing all this context, generate the most insightful shadow rules that explain how analysts are making fraud decisions."
+        ]
+        
+        messages = [
+            SystemMessage(content=system_content),
+            HumanMessage(content="".join(prompt_parts))
+        ]
+        
+        # Structure
+        class GeneralRulesResponse(BaseModel):
+            rules: List[GeneralPurposeRule]
+
+        structured_llm = self.llm.with_structured_output(GeneralRulesResponse)
+        try:
+            response = await structured_llm.ainvoke(messages)
+            return response.rules
+        except Exception as e:
+            logger.error(f"Error generating general rules: {e}")
+            return []
 
     async def chat_txn(
         self, 

@@ -1,11 +1,9 @@
-from fastapi import FastAPI, HTTPException, Body, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
 from typing import Dict, Any, Optional, List
 import os
 import json
 import traceback
-import io
 from datetime import datetime
 from models import (
     GlobalExplanation, TransactionExplanation,
@@ -16,7 +14,6 @@ from models import (
 from chat import chat_manager
 from sessions import session_manager
 from report_generator import report_generator, ReportRequest, ReportType, ReportFormat
-from kernel_manager import kernel_manager, CodeExecutionRequest
 from xgboost_analyzer import xgboost_analyzer
 from shadow_rules_vectorstore import get_vector_store, clear_vector_store_cache
 
@@ -310,6 +307,36 @@ async def analyze_session_data(session_id: str):
         
         if not result.success:
             raise HTTPException(status_code=400, detail=result.error)
+            
+        # === Generate General Purpose Rules ===
+        if result.segment_analysis:
+            try:
+                # Get best segments (filter top 15)
+                top_segments = xgboost_analyzer.get_best_segments(result.segment_analysis, n=15)
+                
+                # Get schema context
+                session = session_manager.get_session(session_id)
+                schema = session.get('dataSchema') or session.get('data_schema')
+                
+                # Convert result to dict for LLM context
+                analysis_dict = result.model_dump()
+                
+                # Generate simplified rules via LLM with FULL CONTEXT
+                print(f"Generating general rules for session {session_id} with comprehensive context...")
+                general_rules = await chat_manager.generate_general_rules_from_segments(
+                    session_id, 
+                    top_segments, 
+                    schema,
+                    analysis_result=analysis_dict  # Pass full analysis for rich context
+                )
+                
+                result.general_purpose_rules = general_rules
+                print(f"Generated {len(general_rules)} context-rich general purpose rules")
+                
+            except Exception as e:
+                print(f"Error generating general purpose rules: {e}")
+                traceback.print_exc()
+                # Continue without failing analysis
         
         # Save analysis result to session
         session = session_manager.get_session(session_id)
@@ -556,144 +583,6 @@ async def generate_report(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         print(f"Error generating report: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ============ Developer Mode - Kernel Endpoints ============
-
-@app.post("/kernel/execute")
-async def execute_code(
-    session_id: str = Body(..., embed=True),
-    code: str = Body(..., embed=True),
-    timeout_seconds: int = Body(30, embed=True)
-):
-    """Execute Python code in an isolated kernel session."""
-    try:
-        request = CodeExecutionRequest(
-            session_id=session_id,
-            code=code,
-            timeout_seconds=min(timeout_seconds, 60)  # Max 60 seconds
-        )
-        
-        result = await kernel_manager.execute_code(request)
-        
-        return {
-            "success": result.success,
-            "outputs": result.outputs,
-            "error": result.error,
-            "execution_time_ms": result.execution_time_ms,
-            "variables": result.variables_captured
-        }
-    except Exception as e:
-        print(f"Error executing code: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/kernel/reset")
-async def reset_kernel(session_id: str = Body(..., embed=True)):
-    """Reset a kernel session (clear all variables)."""
-    try:
-        success = kernel_manager.reset_session(session_id)
-        return {"success": success, "message": "Kernel reset" if success else "No kernel found"}
-    except Exception as e:
-        print(f"Error resetting kernel: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/kernel/{session_id}/info")
-async def get_kernel_info(session_id: str):
-    """Get information about a kernel session."""
-    try:
-        info = kernel_manager.get_session_info(session_id)
-        if not info:
-            return {"exists": False}
-        return {"exists": True, "info": info}
-    except Exception as e:
-        print(f"Error getting kernel info: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/kernel/inject-context")
-async def inject_context(
-    session_id: str = Body(..., embed=True),
-    ml_code: Optional[str] = Body(None, embed=True),
-    global_json: Optional[Dict[str, Any]] = Body(None, embed=True)
-):
-    """Inject context data into a kernel session."""
-    try:
-        kernel_manager.inject_context(session_id, ml_code, global_json)
-        return {"success": True, "message": "Context injected into kernel"}
-    except Exception as e:
-        print(f"Error injecting context: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/kernel/upload-file")
-async def upload_file_to_kernel(
-    session_id: str = Form(...),
-    file: UploadFile = File(...),
-    variable_name: str = Form("uploaded_data")
-):
-    """Upload a CSV/JSON file and load it into the kernel as a DataFrame or dict."""
-    try:
-        content = await file.read()
-        filename = file.filename or "uploaded_file"
-        
-        # Get or create kernel session
-        session = kernel_manager.get_or_create_session(session_id)
-        
-        # Determine file type and load accordingly
-        if filename.endswith('.csv'):
-            import pandas as pd
-            df = pd.read_csv(io.BytesIO(content))
-            session.set_variable(variable_name, df)
-            preview = df.head(5).to_string()
-            return {
-                "success": True,
-                "message": f"CSV loaded as '{variable_name}' ({len(df)} rows, {len(df.columns)} columns)",
-                "preview": preview,
-                "shape": [len(df), len(df.columns)],
-                "columns": list(df.columns)
-            }
-        elif filename.endswith('.json'):
-            data = json.loads(content.decode('utf-8'))
-            session.set_variable(variable_name, data)
-            preview = json.dumps(data, indent=2)[:500]
-            return {
-                "success": True,
-                "message": f"JSON loaded as '{variable_name}'",
-                "preview": preview
-            }
-        else:
-            # Try to load as CSV by default
-            import pandas as pd
-            try:
-                df = pd.read_csv(io.BytesIO(content))
-                session.set_variable(variable_name, df)
-                preview = df.head(5).to_string()
-                return {
-                    "success": True,
-                    "message": f"File loaded as '{variable_name}' ({len(df)} rows)",
-                    "preview": preview,
-                    "shape": [len(df), len(df.columns)],
-                    "columns": list(df.columns)
-                }
-            except:
-                # Load as text
-                text_content = content.decode('utf-8')
-                session.set_variable(variable_name, text_content)
-                return {
-                    "success": True,
-                    "message": f"File loaded as text '{variable_name}' ({len(text_content)} chars)",
-                    "preview": text_content[:500]
-                }
-    except Exception as e:
-        print(f"Error uploading file: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 

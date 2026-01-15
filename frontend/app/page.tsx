@@ -3,7 +3,7 @@ import { useState, createContext, useContext, useEffect, useCallback, useRef } f
 import { Layers, ChevronRight, Check, FileText, BookOpen, TrendingUp, Zap } from 'lucide-react';
 import DataSchemaInput from '@/components/DataSchemaInput';
 import ResultsDashboard from '@/components/ResultsDashboard';
-import ShadowRulesPanel from '@/components/ShadowRulesPanel';
+import DiscoverySection from '@/components/DiscoverySection';
 import SessionPicker from '@/components/SessionPicker';
 import ExecutiveReportSection from '@/components/ExecutiveReportSection';
 import GuidelinesInput from '@/components/GuidelinesInput';
@@ -457,7 +457,7 @@ export default function Home() {
             />
           )}
           {currentStep === 'discovery' && (
-            <ShadowRulesPanel />
+            <DiscoverySection />
           )}
           {currentStep === 'reports' && (
             <div className="max-w-4xl mx-auto">

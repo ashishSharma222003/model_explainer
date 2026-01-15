@@ -440,6 +440,27 @@ Write in clear business language that operations staff can understand and act up
             if decision_context:
                 context_parts.append("## Decision Tree Analysis\n" + "\n".join(decision_context))
         
+        # === ADD GENERAL PURPOSE RULES FROM DISCOVERY SECTION ===
+        if analysis_result and analysis_result.get('general_purpose_rules'):
+            general_rules = analysis_result['general_purpose_rules']
+            rules_context = []
+            rules_context.append("### Shadow Rules Discovered (from Discovery Section)")
+            rules_context.append(f"\n**Total Rules Found**: {len(general_rules)}\n")
+            
+            for idx, rule in enumerate(general_rules[:10], 1):  # Top 10 rules
+                rules_context.append(f"\n**Rule {idx}**: {rule.get('description', 'N/A')}")
+                rules_context.append(f"- Target: {rule.get('target', 'N/A')}")
+                rules_context.append(f"- Accuracy: {rule.get('accuracy', 0)*100:.1f}%")
+                rules_context.append(f"- Coverage: {rule.get('coverage', 0):.1f}% of transactions")
+                rules_context.append(f"- Confidence: {rule.get('confidence', 'N/A')}")
+                if request.include_code:
+                    rules_context.append(f"- Technical Rule: `{rule.get('original_rule', 'N/A')}`")
+            
+            if len(general_rules) > 10:
+                rules_context.append(f"\n*...and {len(general_rules) - 10} more rules*")
+            
+            context_parts.append("## Discovered Business Rules\n" + "\n".join(rules_context))
+        
         context_text = "\n\n".join(context_parts) if context_parts else "Limited context available."
         
         # Build the prompt
@@ -587,11 +608,23 @@ Generate a comprehensive report following the structured format."""
         
         context_text = "\n\n".join(context_parts) if context_parts else "Limited context available. Please analyze more transactions to detect patterns."
         
+        # === ADD GENERAL PURPOSE RULES TO PROMPT ===
+        rules_text = ""
+        analysis_result = session_data.get('analysisResult')
+        if analysis_result and analysis_result.get('general_purpose_rules'):
+            general_rules = analysis_result['general_purpose_rules']
+            rules_text = f"\n\n## DISCOVERED BUSINESS RULES (from Discovery Section)\nTotal Rules: {len(general_rules)}\n"
+            for idx, rule in enumerate(general_rules[:8], 1):  # Top 8 rules
+                rules_text += f"\nRule {idx}: {rule.get('description', 'N/A')}\n"
+                rules_text += f"- Target: {rule.get('target', 'N/A')}\n"
+                rules_text += f"- Accuracy: {rule.get('accuracy', 0)*100:.1f}%\n"
+                rules_text += f"- Coverage: {rule.get('coverage', 0):.1f}%\n"
+        
         system_prompt = self._get_report_prompt(ReportType.SHADOW_REPORT)
         
         user_prompt = f"""Analyze the following fraud review session and generate a Shadow Report.
 
-{context_text}
+{context_text}{rules_text}
 
 Session Stats:
 - Data Schema: {len(data_schema.get('features', [])) if data_schema else 0} features

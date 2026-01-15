@@ -1,10 +1,11 @@
 "use client";
 import React, { useState, useEffect, useContext } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
+import {
   BarChart3, CheckCircle, XCircle, AlertTriangle, TrendingUp,
   RefreshCw, ArrowRight, MessageSquare, Filter, ChevronDown,
-  ChevronUp, Target, Users, Zap, Settings, TreeDeciduous, Image as ImageIcon
+  ChevronUp, Target, Users, Zap, Settings, TreeDeciduous, Image as ImageIcon,
+  Lightbulb, Code
 } from 'lucide-react';
 import { AppContext } from '@/app/page';
 
@@ -16,6 +17,15 @@ interface Hyperparameters {
   max_features: string;        // Features to consider for best split
   bootstrap: boolean;          // Use bootstrap samples
   random_state: number;
+}
+
+interface GeneralPurposeRule {
+  original_rule: string;
+  description: string;
+  target: string;
+  accuracy: number;
+  coverage: number;
+  confidence: string;
 }
 
 interface AnalysisResult {
@@ -69,6 +79,9 @@ interface AnalysisResult {
     is_escalated?: boolean;
     [key: string]: any;
   }>;
+  // === NEW: General Purpose Rules ===
+  general_purpose_rules?: GeneralPurposeRule[];
+
   // Tree visualization
   l1_tree_image?: string;
   l2_tree_image?: string;
@@ -78,6 +91,30 @@ interface AnalysisResult {
   l2_tree_text?: string;
   l1_tree_structure?: any[];
   l2_tree_structure?: any[];
+  // NEW: Segment Analysis
+  combined_target_distribution?: Record<string, number>;
+  segment_analysis?: Array<{
+    segment_id: string;
+    tree_id: number;
+    leaf_id: number;
+    transaction_count: number;
+    class_distribution: Record<string, number>;
+    TP: number;
+    FP: number;
+    TN: number;
+    FN: number;
+    accuracy: number;
+    precision: number;
+    recall: number;
+    fraud_rate: number;
+    dominant_l1_decision: string;
+    rule_text: string;
+    fp_rate: number;
+    fn_rate: number;
+  }>;
+  top_fp_segments?: any[];
+  top_fn_segments?: any[];
+  segment_summary?: string;
   analyzed_at: string;
 }
 
@@ -110,9 +147,9 @@ function HyperparamModal({
   onRunAnalysis: () => void;
 }) {
   if (!show) return null;
-  
+
   return (
-    <div 
+    <div
       className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4"
       onClick={onClose}
     >
@@ -275,20 +312,26 @@ export default function ResultsDashboard({ onChatWithCase }: ResultsDashboardPro
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
-  const [selectedTab, setSelectedTab] = useState<'all' | 'correct' | 'wrong' | 'escalated' | 'true_positives' | 'false_positives' | 'true_negatives' | 'false_negatives'>('all');
-  const [expandedCase, setExpandedCase] = useState<number | null>(null);
-  const [selectedCases, setSelectedCases] = useState<Set<number>>(new Set());
-  
+
+
   // Hyperparameters state
   const [hyperparams, setHyperparams] = useState<Hyperparameters>(DEFAULT_HYPERPARAMS);
   const [showHyperparamModal, setShowHyperparamModal] = useState(false);
   const [showTreeModal, setShowTreeModal] = useState<'l1' | 'l2' | null>(null);
   const [progressMessage, setProgressMessage] = useState<string>('');
-  
-  // Pagination state
-  const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage, setItemsPerPage] = useState(20);
-  const itemsPerPageOptions = [10, 20, 50, 100];
+
+  // Segment analysis state - for interactive exploration
+  const [expandedSegment, setExpandedSegment] = useState<string | null>(null);
+  const [selectedSegment, setSelectedSegment] = useState<any | null>(null);
+  const [showSegmentModal, setShowSegmentModal] = useState(false);
+  const [segmentViewMode, setSegmentViewMode] = useState<'fp' | 'fn' | 'all'>('all');
+
+  // Segment pagination state
+  const [segmentPage, setSegmentPage] = useState(1);
+  const [segmentsPerPage, setSegmentsPerPage] = useState(20);
+  const segmentsPerPageOptions = [10, 20, 50, 100];
+
+
 
   // Load or run analysis
   useEffect(() => {
@@ -299,14 +342,14 @@ export default function ResultsDashboard({ onChatWithCase }: ResultsDashboardPro
 
   const loadOrRunAnalysis = async () => {
     if (!context?.session.id) return;
-    
+
     setLoading(true);
     setError(null);
-    
+
     try {
       // First try to get existing analysis
       const existingRes = await fetch(`http://localhost:8000/sessions/${context.session.id}/analysis`);
-      
+
       if (existingRes.ok) {
         const data = await existingRes.json();
         setAnalysisResult(data);
@@ -324,10 +367,10 @@ export default function ResultsDashboard({ onChatWithCase }: ResultsDashboardPro
 
   const runAnalysis = async () => {
     if (!context?.session.id) return;
-    
+
     setLoading(true);
     setError(null);
-    
+
     try {
       // First, set hyperparameters
       await fetch('http://localhost:8000/analysis/hyperparameters', {
@@ -335,30 +378,30 @@ export default function ResultsDashboard({ onChatWithCase }: ResultsDashboardPro
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(hyperparams),
       });
-      
+
       // Then run analysis
       setProgressMessage('Training Random Forest model...');
       const res = await fetch(`http://localhost:8000/sessions/${context.session.id}/analyze`, {
         method: 'POST',
       });
-      
+
       if (!res.ok) {
         const errorData = await res.json();
         throw new Error(errorData.detail || 'Analysis failed');
       }
-      
+
       setProgressMessage('Processing results...');
       const data = await res.json();
       setAnalysisResult(data);
-      
+
       // Update hyperparams from result
       if (data.hyperparameters) {
         setHyperparams(data.hyperparameters);
       }
-      
+
       // Save to context
       context?.updateSession({ analysisResult: data });
-      
+
     } catch (e: any) {
       setError(e.message || 'Failed to run analysis');
     } finally {
@@ -366,7 +409,7 @@ export default function ResultsDashboard({ onChatWithCase }: ResultsDashboardPro
       setProgressMessage('');
     }
   };
-  
+
   // Load hyperparameters on mount
   useEffect(() => {
     const loadHyperparams = async () => {
@@ -383,87 +426,7 @@ export default function ResultsDashboard({ onChatWithCase }: ResultsDashboardPro
     loadHyperparams();
   }, []);
 
-  const toggleCaseSelection = (index: number) => {
-    const newSelected = new Set(selectedCases);
-    if (newSelected.has(index)) {
-      newSelected.delete(index);
-    } else {
-      newSelected.add(index);
-    }
-    setSelectedCases(newSelected);
-  };
 
-  const handleChatWithSelected = () => {
-    if (selectedCases.size === 0 || !analysisResult) return;
-    
-    // Get all filtered predictions and filter by selected indices
-    const allFiltered = getFilteredPredictions();
-    const cases = Array.from(selectedCases).map(idx => allFiltered[idx]).filter(Boolean);
-    onChatWithCase(cases);
-  };
-  
-  // Reset page when tab changes
-  useEffect(() => {
-    setCurrentPage(1);
-    setSelectedCases(new Set()); // Clear selection when changing tabs
-  }, [selectedTab]);
-
-  const getFilteredPredictions = () => {
-    if (!analysisResult?.wrong_predictions) return [];
-    
-    switch (selectedTab) {
-      case 'all':
-        return analysisResult.wrong_predictions;
-      case 'correct':
-        return analysisResult.wrong_predictions.filter(p => p.is_correct);
-      case 'wrong':
-        return analysisResult.wrong_predictions.filter(p => p.is_wrong);
-      case 'false_positives':
-        return analysisResult.wrong_predictions.filter(p => p.case_type === 'false_positive');
-      case 'false_negatives':
-        return analysisResult.wrong_predictions.filter(p => p.case_type === 'false_negative');
-      case 'escalated':
-        return analysisResult.wrong_predictions.filter(p => p.is_escalated);
-      case 'true_positives':
-        return analysisResult.wrong_predictions.filter(p => p.case_type === 'true_positive');
-      case 'true_negatives':
-        return analysisResult.wrong_predictions.filter(p => p.case_type === 'true_negative');
-      default:
-        return analysisResult.wrong_predictions;
-    }
-  };
-  
-  // Get paginated predictions
-  const getPaginatedPredictions = () => {
-    const filtered = getFilteredPredictions();
-    const startIndex = (currentPage - 1) * itemsPerPage;
-    const endIndex = startIndex + itemsPerPage;
-    return filtered.slice(startIndex, endIndex);
-  };
-  
-  // Calculate total pages
-  const getTotalPages = () => {
-    const filtered = getFilteredPredictions();
-    return Math.ceil(filtered.length / itemsPerPage);
-  };
-  
-  // Calculate counts for each category
-  const getCategoryCounts = () => {
-    if (!analysisResult?.wrong_predictions) return {};
-    const predictions = analysisResult.wrong_predictions;
-    return {
-      all: predictions.length,
-      correct: predictions.filter(p => p.is_correct).length,
-      wrong: predictions.filter(p => p.is_wrong).length,
-      true_positives: predictions.filter(p => p.case_type === 'true_positive').length,
-      false_positives: predictions.filter(p => p.case_type === 'false_positive').length,
-      true_negatives: predictions.filter(p => p.case_type === 'true_negative').length,
-      false_negatives: predictions.filter(p => p.case_type === 'false_negative').length,
-      escalated: predictions.filter(p => p.is_escalated).length,
-      escalated_fraud: predictions.filter(p => p.case_type === 'escalated_fraud').length,
-      escalated_legit: predictions.filter(p => p.case_type === 'escalated_legit').length,
-    };
-  };
 
   const hasData = context?.session.hasCsvData;
 
@@ -487,7 +450,7 @@ export default function ResultsDashboard({ onChatWithCase }: ResultsDashboardPro
         <p className="text-slate-400 mb-4">
           {progressMessage || 'Training Random Forest models...'}
         </p>
-        
+
         {/* Progress Steps */}
         <div className="max-w-md mx-auto mt-6">
           <div className="space-y-3">
@@ -556,7 +519,7 @@ export default function ResultsDashboard({ onChatWithCase }: ResultsDashboardPro
         <p className="text-slate-400 mb-6">
           Run Random Forest analysis to understand L1 and L2 analyst decisions.
         </p>
-        
+
         {/* Hyperparameter Preview */}
         <div className="max-w-md mx-auto mb-6 p-4 bg-slate-900/50 border border-slate-800 rounded-xl">
           <div className="flex items-center justify-between mb-3">
@@ -595,7 +558,7 @@ export default function ResultsDashboard({ onChatWithCase }: ResultsDashboardPro
         </div>
 
         {/* Hyperparameters Modal - Render here too for initial state */}
-        <HyperparamModal 
+        <HyperparamModal
           show={showHyperparamModal}
           hyperparams={hyperparams}
           setHyperparams={setHyperparams}
@@ -610,7 +573,7 @@ export default function ResultsDashboard({ onChatWithCase }: ResultsDashboardPro
   }
 
   const { prediction_breakdown, l1_analysis, l2_analysis } = analysisResult;
-  const filteredPredictions = getFilteredPredictions();
+
 
   return (
     <div className="max-w-6xl mx-auto">
@@ -697,26 +660,7 @@ export default function ResultsDashboard({ onChatWithCase }: ResultsDashboardPro
           <Settings className="w-4 h-4" />
           Hyperparameters
         </button>
-        {/* Always show L1 tree button if we have L1 analysis */}
-        {l1_analysis && (
-          <button
-            onClick={() => setShowTreeModal('l1')}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/40 rounded-lg text-sm text-blue-300"
-          >
-            <TreeDeciduous className="w-4 h-4" />
-            View L1 Decision Tree
-          </button>
-        )}
-        {/* Show L2 tree button if we have L2 analysis */}
-        {l2_analysis && (
-          <button
-            onClick={() => setShowTreeModal('l2')}
-            className="flex items-center gap-2 px-4 py-2 bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 rounded-lg text-sm text-emerald-300"
-          >
-            <TreeDeciduous className="w-4 h-4" />
-            View L2 Decision Tree
-          </button>
-        )}
+
       </div>
 
       {/* L1 Analysis Summary */}
@@ -738,7 +682,7 @@ export default function ResultsDashboard({ onChatWithCase }: ResultsDashboardPro
               </span>
             </div>
           </div>
-          
+
           {/* Model Performance Metrics */}
           <div className="grid grid-cols-4 gap-4 mb-4">
             <div className="text-center p-3 bg-slate-800/50 rounded-lg">
@@ -766,7 +710,7 @@ export default function ResultsDashboard({ onChatWithCase }: ResultsDashboardPro
               <div className="text-xs text-slate-500">F1 Score</div>
             </div>
           </div>
-          
+
           {/* Multi-class indicator */}
           {l1_analysis.metrics.n_classes && l1_analysis.metrics.n_classes > 2 && (
             <div className="text-xs text-amber-400 mb-2 text-center">
@@ -793,6 +737,60 @@ export default function ResultsDashboard({ onChatWithCase }: ResultsDashboardPro
               <div className="text-[10px] text-slate-500">False Neg</div>
             </div>
           </div>
+
+          {/* General Purpose Rules Section */}
+          {analysisResult.general_purpose_rules && analysisResult.general_purpose_rules.length > 0 && (
+            <div className="mb-6 mt-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-2 bg-gradient-to-br from-amber-500 to-orange-600 rounded-lg shadow-lg shadow-amber-500/20">
+                  <Lightbulb className="w-5 h-5 text-white" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold text-white">General Purpose Rules</h3>
+                  <p className="text-slate-400 text-sm">Simplified business logic discovered by AI</p>
+                </div>
+              </div>
+
+              <div className="grid gap-3">
+                {analysisResult.general_purpose_rules.map((rule: GeneralPurposeRule, idx: number) => (
+                  <div key={idx} className="bg-slate-900/50 border border-slate-800 p-4 rounded-xl hover:border-slate-700 transition-colors group/card">
+                    <div className="flex justify-between items-start gap-4">
+                      <div className="text-base text-slate-200 font-medium mb-1">
+                        {rule.description}
+                      </div>
+                      <div className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider whitespace-nowrap ${rule.target === 'Fraud' ? 'bg-red-500/20 text-red-300 border border-red-500/30' : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                        }`}>
+                        {rule.target}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-4 mt-2 text-xs text-slate-500">
+                      <div className="flex items-center gap-1" title="Accuracy">
+                        <Target className="w-3 h-3" />
+                        <span>{(rule.accuracy * 100).toFixed(0)}% Acc</span>
+                      </div>
+                      <div className="flex items-center gap-1" title="Coverage">
+                        <Users className="w-3 h-3" />
+                        <span>{(rule.coverage * 100).toFixed(1)}% Cov</span>
+                      </div>
+
+                      <div className="flex items-center gap-1 ml-auto">
+                        <details className="relative group/details">
+                          <summary className="list-none cursor-pointer hover:text-slate-300 transition-colors flex items-center gap-1 select-none">
+                            <Code className="w-3 h-3" />
+                            Logic
+                          </summary>
+                          <div className="absolute right-0 bottom-6 w-64 p-2 bg-black/90 backdrop-blur rounded text-slate-400 font-mono text-[10px] break-words border border-slate-800 z-10 shadow-xl">
+                            {rule.original_rule}
+                          </div>
+                        </details>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* View Decision Tree Button */}
           {(analysisResult.l1_tree_image || analysisResult.l1_tree_text) && (
@@ -821,7 +819,7 @@ export default function ResultsDashboard({ onChatWithCase }: ResultsDashboardPro
                 <div key={feature} className="flex items-center gap-3">
                   <span className="text-xs text-slate-500 w-4">{idx + 1}</span>
                   <div className="flex-1 bg-slate-800 rounded-full h-2.5">
-                    <div 
+                    <div
                       className="bg-gradient-to-r from-blue-500 to-cyan-400 h-2.5 rounded-full transition-all"
                       style={{ width: `${Math.min(100, (importance as number) * 100)}%` }}
                     />
@@ -835,497 +833,394 @@ export default function ResultsDashboard({ onChatWithCase }: ResultsDashboardPro
         </div>
       )}
 
-      {/* L2 Analysis Summary */}
-      {l2_analysis && (
+      {/* Segment Analysis Section - Interactive */}
+      {analysisResult.segment_analysis && analysisResult.segment_analysis.length > 0 && (
         <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6 mb-6">
           <div className="flex items-center justify-between mb-4">
             <div>
               <h3 className="text-lg font-semibold text-white flex items-center gap-2">
-                <Users className="w-5 h-5 text-emerald-400" />
-                L2 Analyst Decision Analysis
+                <Target className="w-5 h-5 text-cyan-400" />
+                L1 Decision Segments (Pattern Discovery)
               </h3>
               <p className="text-xs text-slate-500 mt-1">
-                Predicting L2 decisions • <span className="text-emerald-400">Includes L1 decision as feature</span>
+                Click on segments to explore decision patterns and metrics
               </p>
             </div>
-            <div className="flex gap-2">
-              <span className="px-2 py-1 bg-emerald-500/20 border border-emerald-500/30 rounded text-xs text-emerald-300">
-                Random Forest
-              </span>
-              <span className="px-2 py-1 bg-blue-500/20 border border-blue-500/30 rounded text-xs text-blue-300">
-                Uses L1
-              </span>
-            </div>
-          </div>
-          
-          {/* Model Performance Metrics */}
-          <div className="grid grid-cols-4 gap-4 mb-4">
-            <div className="text-center p-3 bg-slate-800/50 rounded-lg">
-              <div className="text-xl font-bold text-white">{(l2_analysis.metrics.accuracy * 100).toFixed(1)}%</div>
-              <div className="text-xs text-slate-500">Accuracy</div>
-            </div>
-            <div className="text-center p-3 bg-slate-800/50 rounded-lg">
-              <div className="text-xl font-bold text-white">{(l2_analysis.metrics.precision * 100).toFixed(1)}%</div>
-              <div className="text-xs text-slate-500">Precision</div>
-            </div>
-            <div className="text-center p-3 bg-slate-800/50 rounded-lg">
-              <div className="text-xl font-bold text-white">{(l2_analysis.metrics.recall * 100).toFixed(1)}%</div>
-              <div className="text-xs text-slate-500">Recall</div>
-            </div>
-            <div className="text-center p-3 bg-slate-800/50 rounded-lg">
-              <div className="text-xl font-bold text-white">{(l2_analysis.metrics.f1_score * 100).toFixed(1)}%</div>
-              <div className="text-xs text-slate-500">F1 Score</div>
-            </div>
+            <span className="px-2 py-1 bg-cyan-500/20 border border-cyan-500/30 rounded text-xs text-cyan-300">
+              {analysisResult.segment_analysis.length} Segments
+            </span>
           </div>
 
-          {/* View Decision Tree Button */}
-          {(analysisResult.l2_tree_image || analysisResult.l2_tree_text) && (
-            <div className="mt-4 mb-4">
-              <button
-                onClick={() => setShowTreeModal('l2')}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 rounded-lg text-blue-300 font-medium transition-colors"
-              >
-                <TreeDeciduous className="w-5 h-5" />
-                View L2 Decision Tree
-                {analysisResult.l2_decision_rules && (
-                  <span className="text-xs text-blue-400/70">({analysisResult.l2_decision_rules.length} rules)</span>
-                )}
-              </button>
+          {/* Combined Target Distribution - Clickable badges */}
+          {analysisResult.combined_target_distribution && (
+            <div className="mb-4 p-3 bg-slate-800/50 rounded-lg">
+              <h4 className="text-sm font-medium text-slate-300 mb-2">Combined Target Distribution (L1 Decision + Fraud)</h4>
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(analysisResult.combined_target_distribution).map(([label, count]) => (
+                  <button
+                    key={label}
+                    onClick={() => {
+                      // Filter segments by this class
+                      const filtered = analysisResult.segment_analysis?.filter(
+                        s => s.class_distribution && s.class_distribution[label]
+                      );
+                      if (filtered && filtered.length > 0) {
+                        setSelectedSegment(filtered[0]);
+                        setShowSegmentModal(true);
+                      }
+                    }}
+                    className={`px-3 py-1.5 rounded text-xs cursor-pointer transition-all hover:scale-105 ${label.includes('block_1') ? 'bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30' :
+                      label.includes('block_0') ? 'bg-red-500/20 text-red-300 hover:bg-red-500/30' :
+                        label.includes('release_0') ? 'bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30' :
+                          label.includes('release_1') ? 'bg-amber-500/20 text-amber-300 hover:bg-amber-500/30' :
+                            'bg-blue-500/20 text-blue-300 hover:bg-blue-500/30'
+                      }`}
+                  >
+                    <span className="font-medium">{label}</span>: {count}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
-          {/* Top Features */}
-          <div className="mt-4">
-            <div className="flex items-center justify-between mb-2">
-              <h4 className="text-sm font-medium text-slate-400">Top Influencing Factors</h4>
-              <span className="text-xs text-slate-500">Random Forest feature importance</span>
-            </div>
-            <div className="space-y-2">
-              {Object.entries(l2_analysis.feature_importance || l2_analysis.shap_importance || {}).slice(0, 5).map(([feature, importance], idx) => (
-                <div key={feature} className="flex items-center gap-3">
-                  <span className="text-xs text-slate-500 w-4">{idx + 1}</span>
-                  <div className="flex-1 bg-slate-800 rounded-full h-2.5">
-                    <div 
-                      className="bg-gradient-to-r from-emerald-500 to-teal-400 h-2.5 rounded-full transition-all"
-                      style={{ width: `${Math.min(100, (importance as number) * 100)}%` }}
-                    />
-                  </div>
-                  <span className={`text-sm font-mono truncate w-44 ${feature.toLowerCase().includes('l1') ? 'text-yellow-300' : 'text-white'}`}>
-                    {feature}
-                    {feature.toLowerCase().includes('l1') && <span className="text-[10px] ml-1">(L1)</span>}
-                  </span>
-                  <span className="text-xs text-slate-500 w-12 text-right">{((importance as number) * 100).toFixed(1)}%</span>
-                </div>
-              ))}
-            </div>
+          {/* Segment View Tabs */}
+          <div className="flex gap-2 mb-4">
+            <button
+              onClick={() => setSegmentViewMode('all')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${segmentViewMode === 'all'
+                ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+                : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                }`}
+            >
+              All Segments ({analysisResult.segment_analysis.length})
+            </button>
+            <button
+              onClick={() => setSegmentViewMode('fp')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${segmentViewMode === 'fp'
+                ? 'bg-red-500/20 text-red-300 border border-red-500/40'
+                : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                }`}
+            >
+              High FP ({analysisResult.top_fp_segments?.length || 0})
+            </button>
+            <button
+              onClick={() => setSegmentViewMode('fn')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${segmentViewMode === 'fn'
+                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                }`}
+            >
+              High FN ({analysisResult.top_fn_segments?.length || 0})
+            </button>
           </div>
+
+          {/* Pagination Controls */}
+          {(() => {
+            const currentSegments = segmentViewMode === 'fp' ? analysisResult.top_fp_segments :
+              segmentViewMode === 'fn' ? analysisResult.top_fn_segments :
+                analysisResult.segment_analysis;
+            const totalSegments = currentSegments?.length || 0;
+            const totalPages = Math.ceil(totalSegments / segmentsPerPage);
+            const startIdx = (segmentPage - 1) * segmentsPerPage;
+            const endIdx = startIdx + segmentsPerPage;
+            const paginatedSegments = currentSegments?.slice(startIdx, endIdx) || [];
+
+            return (
+              <>
+                {/* Pagination Header */}
+                <div className="flex items-center justify-between mb-3 p-2 bg-slate-800/30 rounded-lg">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-400">Showing</span>
+                    <select
+                      value={segmentsPerPage}
+                      onChange={(e) => { setSegmentsPerPage(Number(e.target.value)); setSegmentPage(1); }}
+                      className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white"
+                    >
+                      {segmentsPerPageOptions.map(opt => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                    <span className="text-xs text-slate-400">per page</span>
+                  </div>
+                  <span className="text-xs text-slate-400">
+                    {startIdx + 1}-{Math.min(endIdx, totalSegments)} of {totalSegments} segments
+                  </span>
+                </div>
+
+                {/* Segments List */}
+                <div className="space-y-2 max-h-[500px] overflow-y-auto">
+                  {paginatedSegments.map((seg) => (
+                    <div
+                      key={seg.segment_id}
+                      className={`border rounded-lg transition-all cursor-pointer ${expandedSegment === seg.segment_id
+                        ? 'bg-slate-800/80 border-cyan-500/50'
+                        : 'bg-slate-800/30 border-slate-700 hover:bg-slate-800/50 hover:border-slate-600'
+                        }`}
+                    >
+                      {/* Segment Header - Clickable */}
+                      <div
+                        className="p-3 flex items-center justify-between"
+                        onClick={() => setExpandedSegment(expandedSegment === seg.segment_id ? null : seg.segment_id)}
+                      >
+                        <div className="flex items-center gap-3">
+                          <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${expandedSegment === seg.segment_id ? 'rotate-180' : ''}`} />
+                          <span className="font-mono text-cyan-300 text-sm">{seg.segment_id}</span>
+                          <span className="px-2 py-0.5 bg-slate-700 rounded text-xs text-slate-300">
+                            {seg.transaction_count} txns
+                          </span>
+                          <span className={`px-2 py-0.5 rounded text-xs ${seg.dominant_l1_decision === 'block' ? 'bg-red-500/20 text-red-300' :
+                            seg.dominant_l1_decision === 'release' ? 'bg-emerald-500/20 text-emerald-300' :
+                              'bg-blue-500/20 text-blue-300'
+                            }`}>
+                            {seg.dominant_l1_decision}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {seg.FP > 0 && (
+                            <span className="px-2 py-0.5 bg-red-500/20 rounded text-xs text-red-300">
+                              FP: {seg.FP} ({(seg.fp_rate * 100).toFixed(0)}%)
+                            </span>
+                          )}
+                          {seg.FN > 0 && (
+                            <span className="px-2 py-0.5 bg-amber-500/20 rounded text-xs text-amber-300">
+                              FN: {seg.FN} ({(seg.fn_rate * 100).toFixed(0)}%)
+                            </span>
+                          )}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedSegment(seg);
+                              setShowSegmentModal(true);
+                            }}
+                            className="px-2 py-1 bg-violet-500/20 hover:bg-violet-500/30 rounded text-xs text-violet-300"
+                          >
+                            Details
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Expanded Content */}
+                      <AnimatePresence>
+                        {expandedSegment === seg.segment_id && (
+                          <motion.div
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: 'auto', opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            className="overflow-hidden"
+                          >
+                            <div className="px-3 pb-3 border-t border-slate-700 pt-3">
+                              {/* Metrics Grid */}
+                              <div className="grid grid-cols-5 gap-2 mb-3">
+                                <div className="text-center p-2 bg-emerald-500/10 rounded">
+                                  <div className="text-lg font-bold text-emerald-400">{seg.TP}</div>
+                                  <div className="text-[10px] text-slate-500">True Pos</div>
+                                </div>
+                                <div className="text-center p-2 bg-red-500/10 rounded">
+                                  <div className="text-lg font-bold text-red-400">{seg.FP}</div>
+                                  <div className="text-[10px] text-slate-500">False Pos</div>
+                                </div>
+                                <div className="text-center p-2 bg-emerald-500/10 rounded">
+                                  <div className="text-lg font-bold text-emerald-400">{seg.TN}</div>
+                                  <div className="text-[10px] text-slate-500">True Neg</div>
+                                </div>
+                                <div className="text-center p-2 bg-amber-500/10 rounded">
+                                  <div className="text-lg font-bold text-amber-400">{seg.FN}</div>
+                                  <div className="text-[10px] text-slate-500">False Neg</div>
+                                </div>
+                                <div className="text-center p-2 bg-violet-500/10 rounded">
+                                  <div className="text-lg font-bold text-violet-400">{(seg.accuracy * 100).toFixed(0)}%</div>
+                                  <div className="text-[10px] text-slate-500">Accuracy</div>
+                                </div>
+                              </div>
+
+                              {/* Decision Rule */}
+                              <div className="p-2 bg-slate-900/50 rounded border border-slate-700">
+                                <div className="text-xs text-slate-400 mb-1">Decision Rule:</div>
+                                <div className="text-sm text-cyan-300 font-mono">{seg.rule_text}</div>
+                              </div>
+
+                              {/* Class Distribution */}
+                              {seg.class_distribution && (
+                                <div className="mt-2 flex flex-wrap gap-1">
+                                  {Object.entries(seg.class_distribution).map(([cls, cnt]) => (
+                                    <span key={cls} className="px-2 py-0.5 bg-slate-700 rounded text-[10px] text-slate-300">
+                                      {cls}: {cnt as number}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Pagination Footer */}
+                {totalPages > 1 && (
+                  <div className="flex items-center justify-center gap-2 mt-4">
+                    <button
+                      onClick={() => setSegmentPage(Math.max(1, segmentPage - 1))}
+                      disabled={segmentPage === 1}
+                      className={`px-3 py-1 rounded text-sm ${segmentPage === 1
+                        ? 'bg-slate-800 text-slate-600 cursor-not-allowed'
+                        : 'bg-slate-700 text-white hover:bg-slate-600'}`}
+                    >
+                      ← Prev
+                    </button>
+                    <div className="flex items-center gap-1">
+                      {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                        let pageNum;
+                        if (totalPages <= 5) {
+                          pageNum = i + 1;
+                        } else if (segmentPage <= 3) {
+                          pageNum = i + 1;
+                        } else if (segmentPage >= totalPages - 2) {
+                          pageNum = totalPages - 4 + i;
+                        } else {
+                          pageNum = segmentPage - 2 + i;
+                        }
+                        return (
+                          <button
+                            key={pageNum}
+                            onClick={() => setSegmentPage(pageNum)}
+                            className={`w-8 h-8 rounded text-sm ${segmentPage === pageNum
+                              ? 'bg-cyan-500 text-white'
+                              : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                          >
+                            {pageNum}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <button
+                      onClick={() => setSegmentPage(Math.min(totalPages, segmentPage + 1))}
+                      disabled={segmentPage === totalPages}
+                      className={`px-3 py-1 rounded text-sm ${segmentPage === totalPages
+                        ? 'bg-slate-800 text-slate-600 cursor-not-allowed'
+                        : 'bg-slate-700 text-white hover:bg-slate-600'}`}
+                    >
+                      Next →
+                    </button>
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
 
-      {/* Transaction Classifications Section */}
-      <div className="bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden">
-        {/* Header with explanation */}
-        <div className="p-4 border-b border-slate-800 bg-slate-800/30">
-          <h3 className="text-lg font-semibold text-white mb-2 flex items-center gap-2">
-            <BarChart3 className="w-5 h-5 text-blue-400" />
-            Transaction Classifications
-          </h3>
-          <p className="text-sm text-slate-400 mb-3">
-            All transactions classified by L1 analyst decision vs actual fraud status.
-            Select cases to chat with AI about patterns and decisions.
-          </p>
-          <div className="flex flex-wrap gap-4 text-xs">
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded bg-emerald-500/50"></div>
-              <span className="text-slate-400">
-                <strong className="text-emerald-300">TP</strong>: Block → Fraud ✓
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded bg-red-500/50"></div>
-              <span className="text-slate-400">
-                <strong className="text-red-300">FP</strong>: Block → Legit ✗
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded bg-emerald-500/50"></div>
-              <span className="text-slate-400">
-                <strong className="text-emerald-300">TN</strong>: Release → Legit ✓
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded bg-amber-500/50"></div>
-              <span className="text-slate-400">
-                <strong className="text-amber-300">FN</strong>: Release → Fraud ✗
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded bg-blue-500/50"></div>
-              <span className="text-slate-400">
-                <strong className="text-blue-300">ESC</strong>: Escalated
-              </span>
-            </div>
-          </div>
-        </div>
-        
-        {/* Tabs - All Classifications */}
-        <div className="flex flex-wrap border-b border-slate-800">
-          <button
-            onClick={() => setSelectedTab('all')}
-            className={`px-4 py-3 text-sm font-medium transition-colors ${
-              selectedTab === 'all' 
-                ? 'text-white bg-slate-800/50 border-b-2 border-violet-500' 
-                : 'text-slate-400 hover:text-white'
-            }`}
+      {/* Segment Detail Modal */}
+      {showSegmentModal && selectedSegment && (
+        <div
+          className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          onClick={() => setShowSegmentModal(false)}
+        >
+          <motion.div
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            onClick={e => e.stopPropagation()}
+            className="bg-[#0d1117] border border-slate-800 rounded-2xl p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto"
           >
-            📋 All ({getCategoryCounts().all || 0})
-          </button>
-          <button
-            onClick={() => setSelectedTab('correct')}
-            className={`px-4 py-3 text-sm font-medium transition-colors ${
-              selectedTab === 'correct' 
-                ? 'text-white bg-slate-800/50 border-b-2 border-emerald-500' 
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            ✅ Correct ({getCategoryCounts().correct || 0})
-          </button>
-          <button
-            onClick={() => setSelectedTab('wrong')}
-            className={`px-4 py-3 text-sm font-medium transition-colors ${
-              selectedTab === 'wrong' 
-                ? 'text-white bg-slate-800/50 border-b-2 border-red-500' 
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            ❌ Wrong ({getCategoryCounts().wrong || 0})
-          </button>
-          <button
-            onClick={() => setSelectedTab('escalated')}
-            className={`px-4 py-3 text-sm font-medium transition-colors ${
-              selectedTab === 'escalated' 
-                ? 'text-white bg-slate-800/50 border-b-2 border-blue-500' 
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            🔄 Escalated ({getCategoryCounts().escalated || 0})
-          </button>
-        </div>
-        
-        {/* Sub-tabs for detailed breakdown */}
-        <div className="flex flex-wrap bg-slate-900/50 border-b border-slate-800 text-xs">
-          <button
-            onClick={() => setSelectedTab('true_positives')}
-            className={`px-3 py-2 transition-colors ${
-              selectedTab === 'true_positives' 
-                ? 'text-emerald-300 bg-emerald-500/20' 
-                : 'text-slate-500 hover:text-slate-300'
-            }`}
-          >
-            TP: Block→Fraud ({getCategoryCounts().true_positives || 0})
-          </button>
-          <button
-            onClick={() => setSelectedTab('false_positives')}
-            className={`px-3 py-2 transition-colors ${
-              selectedTab === 'false_positives' 
-                ? 'text-red-300 bg-red-500/20' 
-                : 'text-slate-500 hover:text-slate-300'
-            }`}
-          >
-            FP: Block→Legit ({getCategoryCounts().false_positives || 0})
-          </button>
-          <button
-            onClick={() => setSelectedTab('true_negatives')}
-            className={`px-3 py-2 transition-colors ${
-              selectedTab === 'true_negatives' 
-                ? 'text-emerald-300 bg-emerald-500/20' 
-                : 'text-slate-500 hover:text-slate-300'
-            }`}
-          >
-            TN: Release→Legit ({getCategoryCounts().true_negatives || 0})
-          </button>
-          <button
-            onClick={() => setSelectedTab('false_negatives')}
-            className={`px-3 py-2 transition-colors ${
-              selectedTab === 'false_negatives' 
-                ? 'text-amber-300 bg-amber-500/20' 
-                : 'text-slate-500 hover:text-slate-300'
-            }`}
-          >
-            FN: Release→Fraud ({getCategoryCounts().false_negatives || 0})
-          </button>
-        </div>
-
-        {/* Action Bar with Selection + Pagination Controls */}
-        <div className="px-4 py-3 bg-slate-800/30 border-b border-slate-800 flex flex-wrap items-center justify-between gap-4">
-          {/* Left: Selection info and quick select */}
-          <div className="flex items-center gap-3">
-            {/* Quick select buttons */}
-            <div className="flex items-center gap-1 border-r border-slate-700 pr-3">
-              <button
-                onClick={() => {
-                  const filtered = getFilteredPredictions();
-                  const newSelected = new Set<number>();
-                  for (let i = 0; i < Math.min(10, filtered.length); i++) {
-                    newSelected.add(i);
-                  }
-                  setSelectedCases(newSelected);
-                  setCurrentPage(1);
-                }}
-                className="px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded text-xs text-white"
-                title="Select first 10 transactions"
-              >
-                Select 10
-              </button>
-              <button
-                onClick={() => {
-                  const filtered = getFilteredPredictions();
-                  const newSelected = new Set<number>();
-                  for (let i = 0; i < Math.min(20, filtered.length); i++) {
-                    newSelected.add(i);
-                  }
-                  setSelectedCases(newSelected);
-                  setCurrentPage(1);
-                }}
-                className="px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded text-xs text-white"
-                title="Select first 20 transactions"
-              >
-                Select 20
-              </button>
-              <button
-                onClick={() => {
-                  const filtered = getFilteredPredictions();
-                  const newSelected = new Set<number>();
-                  for (let i = 0; i < filtered.length; i++) {
-                    newSelected.add(i);
-                  }
-                  setSelectedCases(newSelected);
-                }}
-                className="px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded text-xs text-white"
-                title="Select all transactions"
-              >
-                All
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                  <Target className="w-5 h-5 text-cyan-400" />
+                  Segment Details
+                </h3>
+                <p className="text-sm text-cyan-300 font-mono mt-1">{selectedSegment.segment_id}</p>
+              </div>
+              <button onClick={() => setShowSegmentModal(false)} className="text-slate-400 hover:text-white p-2 hover:bg-slate-800 rounded-lg">
+                <XCircle className="w-5 h-5" />
               </button>
             </div>
-            
-            {/* Selection status */}
-            {selectedCases.size > 0 ? (
-              <>
-                <span className="text-sm text-violet-300 font-medium">
-                  ✓ {selectedCases.size} selected
-                </span>
-                <button
-                  onClick={handleChatWithSelected}
-                  className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-500 rounded-lg text-sm text-white font-medium"
-                >
-                  <MessageSquare className="w-4 h-4" />
-                  Chat About Selected
-                </button>
-                <button
-                  onClick={() => setSelectedCases(new Set())}
-                  className="text-sm text-slate-400 hover:text-white px-2 py-1"
-                >
-                  Clear
-                </button>
-              </>
-            ) : (
-              <span className="text-sm text-slate-500">
-                Click rows or use buttons to select
-              </span>
-            )}
-          </div>
-          
-          {/* Right: Pagination controls */}
-          <div className="flex items-center gap-4">
-            {/* Items per page */}
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-slate-500">Show:</span>
-              <select
-                value={itemsPerPage}
-                onChange={(e) => {
-                  setItemsPerPage(Number(e.target.value));
-                  setCurrentPage(1);
-                }}
-                className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-white"
-              >
-                {itemsPerPageOptions.map(opt => (
-                  <option key={opt} value={opt}>{opt}</option>
-                ))}
-              </select>
+
+            {/* Full Metrics */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+              <div className="text-center p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
+                <div className="text-2xl font-bold text-emerald-400">{selectedSegment.TP}</div>
+                <div className="text-xs text-slate-400">True Positives</div>
+              </div>
+              <div className="text-center p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
+                <div className="text-2xl font-bold text-red-400">{selectedSegment.FP}</div>
+                <div className="text-xs text-slate-400">False Positives</div>
+              </div>
+              <div className="text-center p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
+                <div className="text-2xl font-bold text-emerald-400">{selectedSegment.TN}</div>
+                <div className="text-xs text-slate-400">True Negatives</div>
+              </div>
+              <div className="text-center p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
+                <div className="text-2xl font-bold text-amber-400">{selectedSegment.FN}</div>
+                <div className="text-xs text-slate-400">False Negatives</div>
+              </div>
             </div>
-            
-            {/* Page navigation */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
-                disabled={currentPage === 1}
-                className="px-2 py-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 disabled:hover:bg-slate-800 rounded text-sm text-white"
-              >
-                ←
-              </button>
-              <span className="text-sm text-slate-400">
-                Page {currentPage} of {getTotalPages() || 1}
-              </span>
-              <button
-                onClick={() => setCurrentPage(Math.min(getTotalPages(), currentPage + 1))}
-                disabled={currentPage >= getTotalPages()}
-                className="px-2 py-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 disabled:hover:bg-slate-800 rounded text-sm text-white"
-              >
-                →
-              </button>
+
+            {/* Derived Metrics */}
+            <div className="grid grid-cols-4 gap-3 mb-4">
+              <div className="text-center p-2 bg-slate-800 rounded-lg">
+                <div className="text-lg font-bold text-white">{(selectedSegment.accuracy * 100).toFixed(1)}%</div>
+                <div className="text-[10px] text-slate-500">Accuracy</div>
+              </div>
+              <div className="text-center p-2 bg-slate-800 rounded-lg">
+                <div className="text-lg font-bold text-white">{(selectedSegment.precision * 100).toFixed(1)}%</div>
+                <div className="text-[10px] text-slate-500">Precision</div>
+              </div>
+              <div className="text-center p-2 bg-slate-800 rounded-lg">
+                <div className="text-lg font-bold text-white">{(selectedSegment.recall * 100).toFixed(1)}%</div>
+                <div className="text-[10px] text-slate-500">Recall</div>
+              </div>
+              <div className="text-center p-2 bg-slate-800 rounded-lg">
+                <div className="text-lg font-bold text-white">{(selectedSegment.fraud_rate * 100).toFixed(1)}%</div>
+                <div className="text-[10px] text-slate-500">Fraud Rate</div>
+              </div>
             </div>
-            
-            {/* Total count */}
-            <span className="text-xs text-slate-500">
-              ({getFilteredPredictions().length} total)
-            </span>
-          </div>
-        </div>
 
-        {/* Cases List - Paginated */}
-        <div className="max-h-[600px] overflow-y-auto">
-          {getPaginatedPredictions().length === 0 ? (
-            <div className="text-center py-12 text-slate-500">
-              <CheckCircle className="w-12 h-12 mx-auto mb-3 opacity-50" />
-              <p>No transactions in this category</p>
-            </div>
-          ) : (
-            <div className="divide-y divide-slate-800/50">
-              {getPaginatedPredictions().map((prediction, pageIdx) => {
-                // Calculate the actual index in the filtered list for selection
-                const actualIdx = (currentPage - 1) * itemsPerPage + pageIdx;
-                return (
-                <div 
-                  key={prediction.index} 
-                  className={`p-4 hover:bg-slate-800/30 transition-colors cursor-pointer ${
-                    selectedCases.has(actualIdx) ? 'bg-violet-500/10 border-l-4 border-violet-500' : ''
-                  }`}
-                  onClick={() => toggleCaseSelection(actualIdx)}
-                >
-                  <div className="flex items-center gap-4">
-                    {/* Checkbox */}
-                    <div
-                      className={`w-6 h-6 rounded border-2 flex items-center justify-center flex-shrink-0 ${
-                        selectedCases.has(actualIdx) 
-                          ? 'bg-violet-500 border-violet-500' 
-                          : 'border-slate-600 hover:border-slate-500'
-                      }`}
-                    >
-                      {selectedCases.has(actualIdx) && <CheckCircle className="w-4 h-4 text-white" />}
-                    </div>
+            {/* Segment Info */}
+            <div className="space-y-3">
+              <div className="p-3 bg-slate-800/50 rounded-lg">
+                <div className="text-xs text-slate-400 mb-1">Transaction Count</div>
+                <div className="text-lg font-bold text-white">{selectedSegment.transaction_count}</div>
+              </div>
 
-                    {/* Case Type Badge with better explanation */}
-                    <div className={`px-3 py-1.5 rounded text-xs font-bold min-w-[80px] text-center ${
-                      prediction.case_type === 'true_positive' ? 'bg-emerald-500/30 text-emerald-200 border border-emerald-500/50' :
-                      prediction.case_type === 'false_positive' ? 'bg-red-500/30 text-red-200 border border-red-500/50' :
-                      prediction.case_type === 'true_negative' ? 'bg-emerald-500/30 text-emerald-200 border border-emerald-500/50' :
-                      prediction.case_type === 'false_negative' ? 'bg-amber-500/30 text-amber-200 border border-amber-500/50' :
-                      prediction.case_type === 'escalated_fraud' ? 'bg-blue-500/30 text-blue-200 border border-blue-500/50' :
-                      'bg-blue-500/30 text-blue-200 border border-blue-500/50'
-                    }`}>
-                      {prediction.case_type === 'true_positive' ? '✅ TP' :
-                       prediction.case_type === 'false_positive' ? '🚨 FP' :
-                       prediction.case_type === 'true_negative' ? '✅ TN' :
-                       prediction.case_type === 'false_negative' ? '⚠️ FN' :
-                       prediction.case_type === 'escalated_fraud' ? '🔄 ESC' :
-                       '🔄 ESC'}
-                    </div>
+              <div className="p-3 bg-slate-800/50 rounded-lg">
+                <div className="text-xs text-slate-400 mb-1">Dominant L1 Decision</div>
+                <div className={`text-lg font-bold ${selectedSegment.dominant_l1_decision === 'block' ? 'text-red-400' :
+                  selectedSegment.dominant_l1_decision === 'release' ? 'text-emerald-400' :
+                    'text-blue-400'
+                  }`}>{selectedSegment.dominant_l1_decision}</div>
+              </div>
 
-                    {/* Case ID and summary */}
-                    <div className="flex-1 min-w-0">
-                      <div className="text-white font-mono font-medium">Case #{prediction.case_id}</div>
-                      <div className="text-xs text-slate-500 mt-0.5">
-                        {prediction.case_type === 'true_positive' ? 'L1 blocked (fraud) → Actually fraud ✓' :
-                         prediction.case_type === 'false_positive' ? 'L1 blocked (fraud) → Actually legit ✗' :
-                         prediction.case_type === 'true_negative' ? 'L1 released (legit) → Actually legit ✓' :
-                         prediction.case_type === 'false_negative' ? 'L1 released (legit) → Actually fraud ✗' :
-                         prediction.case_type === 'escalated_fraud' ? 'L1 escalated → Actually fraud' :
-                         'L1 escalated → Actually legit'}
-                      </div>
-                    </div>
+              <div className="p-3 bg-cyan-500/10 border border-cyan-500/30 rounded-lg">
+                <div className="text-xs text-slate-400 mb-1">Decision Rule (Pattern)</div>
+                <div className="text-sm text-cyan-300 font-mono whitespace-pre-wrap">{selectedSegment.rule_text}</div>
+              </div>
 
-                    {/* Decision flow visualization */}
-                    <div className="flex items-center gap-2 text-sm bg-slate-800/50 rounded-lg px-3 py-2">
-                      <div className="text-center">
-                        <div className="text-[10px] text-slate-500 mb-0.5">L1 Said</div>
-                        <div className={`font-bold ${
-                          prediction.l1_decision.toLowerCase() === 'block' ? 'text-red-400' :
-                          prediction.l1_decision.toLowerCase() === 'escalate' ? 'text-blue-400' :
-                          prediction.l1_decision.toLowerCase() === 'release' ? 'text-green-400' :
-                          'text-slate-300'
-                        }`}>
-                          {prediction.l1_decision}
-                        </div>
-                      </div>
-                      <div className="text-slate-600">→</div>
-                      <div className="text-center">
-                        <div className="text-[10px] text-slate-500 mb-0.5">Actually</div>
-                        <div className={`font-bold ${
-                          prediction.true_fraud.toLowerCase().includes('fraud') || prediction.true_fraud === '1' 
-                            ? 'text-red-400' 
-                            : 'text-green-400'
-                        }`}>
-                          {prediction.true_fraud}
-                        </div>
-                      </div>
-                      {/* Correctness indicator */}
-                      <div className={`ml-2 text-lg ${prediction.is_correct ? 'text-emerald-400' : prediction.is_wrong ? 'text-red-400' : 'text-blue-400'}`}>
-                        {prediction.is_correct ? '✓' : prediction.is_wrong ? '✗' : '?'}
-                      </div>
-                    </div>
-
-                    {/* Expand button */}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setExpandedCase(expandedCase === actualIdx ? null : actualIdx);
-                      }}
-                      className="text-slate-400 hover:text-white p-2 hover:bg-slate-700 rounded"
-                    >
-                      {expandedCase === actualIdx ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
-                    </button>
-                  </div>
-
-                  {/* Expanded Details */}
-                  <AnimatePresence>
-                    {expandedCase === actualIdx && (
-                      <motion.div
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: 'auto' }}
-                        exit={{ opacity: 0, height: 0 }}
-                        className="mt-4 pt-4 border-t border-slate-800"
+              {/* Class Distribution */}
+              {selectedSegment.class_distribution && (
+                <div className="p-3 bg-slate-800/50 rounded-lg">
+                  <div className="text-xs text-slate-400 mb-2">Class Distribution</div>
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(selectedSegment.class_distribution).map(([cls, cnt]) => (
+                      <span
+                        key={cls}
+                        className={`px-2 py-1 rounded text-xs ${cls.includes('block_1') ? 'bg-emerald-500/20 text-emerald-300' :
+                          cls.includes('block_0') ? 'bg-red-500/20 text-red-300' :
+                            cls.includes('release_0') ? 'bg-emerald-500/20 text-emerald-300' :
+                              cls.includes('release_1') ? 'bg-amber-500/20 text-amber-300' :
+                                'bg-slate-700 text-slate-300'
+                          }`}
                       >
-                        <div className="grid grid-cols-4 gap-4 text-sm">
-                          {Object.entries(prediction)
-                            .filter(([key]) => !['index', 'case_type'].includes(key))
-                            .slice(0, 12)
-                            .map(([key, value]) => (
-                              <div key={key}>
-                                <div className="text-slate-500 text-xs mb-0.5">{key}</div>
-                                <div className="text-white font-mono text-xs truncate">{String(value)}</div>
-                              </div>
-                            ))}
-                        </div>
-                        <button
-                          onClick={() => {
-                            setSelectedCases(new Set([actualIdx]));
-                            handleChatWithSelected();
-                          }}
-                          className="mt-4 flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs text-slate-300"
-                        >
-                          <MessageSquare className="w-3 h-3" />
-                          Chat about this case
-                        </button>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
+                        {cls}: {cnt as number}
+                      </span>
+                    ))}
+                  </div>
                 </div>
-              );
-              })}
+              )}
             </div>
-          )}
+          </motion.div>
         </div>
-      </div>
+      )}
 
       {/* Re-run Analysis Button */}
       <div className="mt-6 text-center">
@@ -1354,7 +1249,9 @@ export default function ResultsDashboard({ onChatWithCase }: ResultsDashboardPro
         }}
       />
 
-      {/* Tree Visualization Modal */}
+      {/* === NEW: Segment Analysis === */}
+      {/* general_purpose_rules?: GeneralPurposeRule[]; */}
+      {/* Tree visualization (base64 encoded PNG) */}
       <AnimatePresence>
         {showTreeModal && (
           <motion.div
@@ -1395,7 +1292,7 @@ export default function ResultsDashboard({ onChatWithCase }: ResultsDashboardPro
                   <strong className={showTreeModal === 'l1' ? 'text-blue-300' : 'text-emerald-300'}>
                     {showTreeModal === 'l1' ? 'L1 Analysis:' : 'L2 Analysis:'}
                   </strong>{' '}
-                  {showTreeModal === 'l1' 
+                  {showTreeModal === 'l1'
                     ? 'This tree shows how L1 analysts make decisions based on transaction features. All L2-related columns are excluded.'
                     : 'This tree shows how L2 analysts review L1 decisions. The L1 decision is included as a feature to show how L2 uses L1\'s judgment.'}
                 </p>
