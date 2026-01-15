@@ -240,6 +240,7 @@ CRITICAL RULES - FOLLOW EXACTLY:
 4. NO JSON, NO MARKDOWN CODE BLOCKS - this is a business document, not a technical doc
 5. Write in COMPLETE SENTENCES with proper narrative flow
 6. Use BUSINESS LANGUAGE that a CEO would understand
+7. Don't talk directly about the model, the schema
 
 STRUCTURE (keep it clean and scannable):
 
@@ -275,6 +276,14 @@ WRITING STYLE:
 - Say "review process" not "model"
 - Say "high-value transactions" not "amount > 10000"
 - Frame everything as business opportunity or risk
+
+GUIDELINE COMPLIANCE ANALYSIS:
+If bank guidelines are provided:
+- Compare discovered decision patterns against official guidelines
+- Identify any guideline violations or gaps
+- Note areas where guidelines are being consistently followed vs. ignored
+- Recommend specific guideline updates or enforcement actions
+- Highlight training needs based on guideline compliance issues
 
 This report will be reviewed by the bank's CEO and board members."""
 
@@ -312,6 +321,15 @@ IMPORTANT:
 - Prioritize findings by severity and frequency
 - Provide concrete, actionable recommendations
 - Write in plain business language, avoid technical jargon
+
+GUIDELINE COMPLIANCE ANALYSIS:
+If bank guidelines are provided:
+- CRITICAL: Compare ALL discovered shadow rules against official bank guidelines
+- Mark each shadow rule as: "Aligned with Guidelines", "Violates Guidelines", or "Not Covered by Guidelines"
+- For violations: specify WHICH guideline is violated and the potential compliance risk
+- For uncover patterns: assess if they should become official guidelines
+- Recommend specific actions: training, guideline updates, process changes, or enforcement
+- Estimate compliance risk level: Low, Medium, High, Critical
 
 The goal is to help the bank improve their fraud review process, ensure compliance, and reduce bias."""
 
@@ -460,6 +478,25 @@ Write in clear business language that operations staff can understand and act up
                 rules_context.append(f"\n*...and {len(general_rules) - 10} more rules*")
             
             context_parts.append("## Discovered Business Rules\n" + "\n".join(rules_context))
+        
+        # === ADD BANK GUIDELINES FOR COMPLIANCE CHECKING ===
+        guidelines = session_data.get('guidelines', [])
+        if guidelines:
+            guidelines_context = []
+            guidelines_context.append("### Bank Guidelines & Policies")
+            guidelines_context.append(f"\n**Total Guidelines**: {len(guidelines)}\n")
+            
+            for guideline in guidelines:
+                guidelines_context.append(f"\n**{guideline.get('title', 'Guideline')}** ({guideline.get('category', 'general')})")
+                if guideline.get('description'):
+                    guidelines_context.append(f"Description: {guideline.get('description')}")
+                if guideline.get('rules'):
+                    rules_preview = guideline.get('rules', [])[:3]
+                    guidelines_context.append(f"Rules: {', '.join(rules_preview)}")
+                    if len(guideline.get('rules', [])) > 3:
+                        guidelines_context.append(f"...and {len(guideline.get('rules', [])) - 3} more")
+            
+            context_parts.append("## Bank Guidelines & Policies\n" + "\n".join(guidelines_context))
         
         context_text = "\n\n".join(context_parts) if context_parts else "Limited context available."
         
