@@ -241,7 +241,28 @@ CRITICAL RULES - FOLLOW EXACTLY:
 5. Write in COMPLETE SENTENCES with proper narrative flow
 6. Use BUSINESS LANGUAGE that a CEO would understand
 7. Don't talk directly about the model, the schema
+8. Classify shadow rules into:
+    1. Working as intended (low fraud leakage / low customer friction)
+    2. Problematic (high fraud leakage or high false positives)
+9. Highlight specific shadow rules responsible for releasing fraudulent transactions, including:
+    1. Rule description
+    2. Number of fraud cases impacted
+    3. Share of total fraud leakage (%)
+    4. Average transaction value impacted
+10. Explain high-risk release shadow rules using a combination of narrative and metrics, clearly articulating:
+    1. Why the rule exists
+    2. How often it triggers
+    3. The fraud loss it introduces
 
+STRUCTURE (keep it clean and scannable):
+
+EXECUTIVE SUMMARY:
+Write 2-3 impactful sentences summarizing the key finding. Make it headline-worthy.
+
+KEY FINDINGS:
+- Each finding should be a complete, clear business statement
+2. How often it triggers
+3. The fraud loss it introduces
 STRUCTURE (keep it clean and scannable):
 
 EXECUTIVE SUMMARY:
